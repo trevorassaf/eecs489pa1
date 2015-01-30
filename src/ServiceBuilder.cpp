@@ -1,6 +1,6 @@
-#include <ServiceBuilder.h>
+#include "ServiceBuilder.h"
 
-ServiceBuilder::ServiceBuilder()
+ServiceBuilder::ServiceBuilder() :
     port_(0),
     backlog_(BACKLOG_LEN),
     isAddressReuseEnabled_(false),
@@ -9,37 +9,36 @@ ServiceBuilder::ServiceBuilder()
 
 ServiceBuilder& ServiceBuilder::setPort(u_short port) {
   port_ = port;
-  return this;
+  return *this;
 }
 
 ServiceBuilder& ServiceBuilder::setBacklog(unsigned int backlog) {
   backlog_ = backlog;
-  return this;
+  return *this;
 }
 
 ServiceBuilder& ServiceBuilder::enableAddressReuse() {
   isAddressReuseEnabled_ = true;
-  return this;
+  return *this;
 }
 
 ServiceBuilder& ServiceBuilder::disableAddressReuse() {
   isAddressReuseEnabled_ = false;
-  return this;
+  return *this;
 }
 
 ServiceBuilder& ServiceBuilder::enableLinger(unsigned int duration) {
   isLingerEnabled_ = true;
   lingerDuration_ = duration;
-  return this;
+  return *this;
 }
 
 ServiceBuilder& ServiceBuilder::disableLinger() {
   isLingerEnabled_ = false;
-  return this;
+  return *this;
 }
 
-Service ServiceBuilder::build() const {
-  
+const Service ServiceBuilder::build() const {
   // Initialize socket
   int sd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sd == -1) {
@@ -62,7 +61,7 @@ Service ServiceBuilder::build() const {
 
   // Bind socket
   struct sockaddr_in self;
-  memset(&self, 0 sizeof(sockaddr_in));
+  memset(&self, 0, sizeof(sockaddr_in));
   self.sin_family = AF_INET;
   self.sin_addr.s_addr = INADDR_ANY;
   self.sin_port = port_;

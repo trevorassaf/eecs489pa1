@@ -1,7 +1,7 @@
 #pragma once
 
-#include <SocketException.h>
-#include <Service.h>
+#include "SocketException.h"
+#include "Service.h"
 
 #include <string.h>        // memset(), memcmp(), strlen(), strcpy(), memcpy()
 #include <unistd.h>        // getopt(), STDIN_FILENO, gethostname()
@@ -93,4 +93,4 @@ class ServiceBuilder {
      */
     const Service build() const; 
     
-}
+};

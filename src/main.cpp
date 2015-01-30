@@ -1,10 +1,14 @@
 #include <string>
 #include <assert.h>        // assert()
 #include <sys/types.h>     // u_short
+#include <arpa/inet.h>     // htons(), inet_ntoa()
 #include <iostream>
 
-#include <Service.h>
-#include <ServiceBuilder.h>
+#include "Service.h"
+#include "ServiceBuilder.h"
+#include "ServerBuilder.h"
+#include "Connection.h"
+#include "SocketException.h"
 
 #define PR_MAXPEERS 6
 #define PR_MAXFQDN 256
@@ -14,9 +18,11 @@
 #define PR_MAXPEERS_FLAG 'n'
 #define PR_CLI_OPT_PREFIX '-'
 
+#define PR_QLEN 10 
+
 #define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
 
-enum CliOption { P, N };
+enum CliOption {P, N};
 
 typedef struct {
   std::string name;     // host domain name 
@@ -71,6 +77,7 @@ CliOption parseCliOption(char* cli_input) {
       return N;
     default:
       fprintf(stderr, "Invalid cli flag");
+      exit(1);
   }
 }
 
@@ -102,20 +109,34 @@ void setCliParam(CliOption opt, char* cli_param_str, unsigned int& max_peers, fq
 Service spawnPeerListener(u_short port) {
   ServiceBuilder builder; 
   return builder
-    .setPort(port)
-    .enableAddressReuse()
-    .setBacklog(PR_QLEN)
-    .build();
+      .setPort(port)
+      .enableAddressReuse()
+      .setBacklog(PR_QLEN)
+      .build();
+}
+
+/**
+ * connectToPeer()
+ * - Establish connection to remote.
+ * @peer remote_fqdn : fqdn of target peer 
+ */
+Connection connectToPeer(const fqdn& remote_fqdn) {
+  ServerBuilder builder;
+  return builder
+      .setDomainName(remote_fqdn.name)
+      .setPort(remote_fqdn.port)
+      .enableAddressReuse()
+      .build();
 }
 
 int main(int argc, char** argv) {
   
   // Parse command line arguments
   unsigned int max_peers = PR_MAXPEERS;
-  fqdn remote; 
+  fqdn remote_fqdn; 
 
   if (argc == 3) {
-    setCliParam(parseCliOption(*(argv + 1)), *(argv + 2), max_peers, remote);
+    setCliParam(parseCliOption(*(argv + 1)), *(argv + 2), max_peers, remote_fqdn);
   } else if (argc == 5) {
     // Parse cli options
     CliOption first_cli_option = parseCliOption(*(argv + 1));
@@ -123,8 +144,8 @@ int main(int argc, char** argv) {
     net_assert(first_cli_option != second_cli_option, "Can't specify the same cli option twice");
 
     // Set cli params
-    setCliParam(first_cli_option, *(argv + 2), max_peers, remote);
-    setCliParam(second_cli_option, *(argv + 4), max_peers, remote);
+    setCliParam(first_cli_option, *(argv + 2), max_peers, remote_fqdn);
+    setCliParam(second_cli_option, *(argv + 4), max_peers, remote_fqdn);
   } else if (argc != 1) {
     fprintf(stderr, "Invalid cli args: ./peer [-p <fqdn>:<port>] [-n <max peers>]"); 
     exit(1);
@@ -133,15 +154,15 @@ int main(int argc, char** argv) {
   u_short port = 0;
 
   // Connect to peer, if instructed by user. 
-  if (!remote.name.empty()) {
-    Server server = connectToPeer(remote);
-    port = server.getPort();
+  if (!remote_fqdn.name.empty()) {
+    Connection server = connectToPeer(remote_fqdn);
+    port = server.getRemotePort();
 
     // Report server info
     fprintf(
         stderr,
         "Connected to peer %s:%d\n",
-        server.getDomainName(),
+        server.getRemoteDomainName().c_str(),
         ntohs(port)
     );
 
@@ -149,15 +170,17 @@ int main(int argc, char** argv) {
   }
 
   // Allow other peers to connect 
-  Service service = spawnService(port);
+  Service service = spawnPeerListener(port);
 
   // Report service info
   fprintf(
       stderr,
       "This peer address is %s:%d/n",
-      service.getDomainName(),
-      noths(service.getPort())
+      service.getDomainName().c_str(),
+      ntohs(service.getPort())
   ); 
 
+  service.close();
 
+  return 0;
 }

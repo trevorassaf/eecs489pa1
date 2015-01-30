@@ -1,7 +1,17 @@
 #pragma once
 
+#include "Connection.h"
+#include "SocketException.h"
+
 #include <string>
-#include <sys/types.h>
+#include <unistd.h>        // getopt(), STDIN_FILENO, gethostname()
+#include <signal.h>        // signal()
+#include <netdb.h>         // gethostbyname(), gethostbyaddr()
+#include <netinet/in.h>    // struct in_addr
+#include <arpa/inet.h>     // htons(), inet_ntoa()
+#include <sys/types.h>     // u_short
+#include <sys/socket.h>    // socket API, setsockopt(), getsockname()
+#include <sys/select.h>    // select(), FD_*
 
 #define MAXFQDN 256
 
@@ -33,22 +43,35 @@ class Service {
      */
     unsigned int lingerDuration_;
 
+    /**
+     * initService()
+     * - Initialize service data.
+     */
+    void initService();
+
   public:
     /**
      * ServerSocket()
      * - Ctor for ServerSocket.
      * @param file_descriptor : fd for socket.
+     * @param linger_duration : time that socket should wait in millis 
      */
     explicit Service(
         int file_descriptor,
-        bool should_linger,
         unsigned int linger_duration);
-    
+
+    /**
+     * ServerSocket()
+     * - Ctor for ServerSocket.
+     * @param file_descriptor : fd for socket.
+     */
+    explicit Service(int file_descriptor);
+
     /**
      * getFileDescriptor()
      * - Return file descriptor.
      */
-    int getFileDescriptor() ;
+    int getFileDescriptor() const;
 
     /**
      * getPort()
@@ -66,7 +89,7 @@ class Service {
      * accept()
      * - Spawn connection for client.
      */
-    const Client accept() const;
+    const Connection accept() const;
 
     /**
      * close()
@@ -74,4 +97,4 @@ class Service {
      * @throws SocketException
      */
     void close() const;
-}
+};
