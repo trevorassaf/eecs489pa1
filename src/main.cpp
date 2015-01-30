@@ -35,7 +35,7 @@ typedef struct {
  */
 void parseMaxPeers(char* cli_input, unsigned int& max_peers) {
   max_peers = atoi(cli_input); 
-  net_assert(max_peers, "Invalid 'max-peers' specified.");
+  net_assert(max_peers > 1, "Invalid 'max-peers' specified.");
 }
 
 /**
@@ -129,6 +129,16 @@ Connection connectToPeer(const fqdn& remote_fqdn) {
       .build();
 }
 
+/**
+ * runP2pService()
+ * - Activate p2p service.
+ */
+void runP2pService(const Service& service, P2pTable& p2p_table) {
+  do {
+    
+  } while (true);
+}
+
 int main(int argc, char** argv) {
   
   // Parse command line arguments
@@ -178,7 +188,9 @@ int main(int argc, char** argv) {
       "This peer address is %s:%d/n",
       service.getDomainName().c_str(),
       ntohs(service.getPort())
-  ); 
+  );
+
+  runP2pService(service, peer_table);
 
   service.close();
 
