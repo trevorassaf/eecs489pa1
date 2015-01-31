@@ -3,11 +3,13 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <vector>
+#include <deque>
 #include <assert.h>
 #include <sys/select.h>    // select(), FD_*
 
 #include "Connection.h"
+
+#define MAX_REJECTED 6
 
 class P2pTable {
 
@@ -21,6 +23,14 @@ class P2pTable {
      bool is_pending;
    };
 
+   /**
+    * Address of rejected remote peers.
+    */
+   struct RemoteAddress {
+    uint32_t ipv4;
+    uint16_t port;
+   };
+
     /**
      * Table of peers that are connected or have pending connections. The
      * bit is true iff the connection is pending.
@@ -29,13 +39,32 @@ class P2pTable {
 
    /**
     * Set of peers that have rejected requests by this node to join. 
+    * The maximum length of this list is MAX_REJECTED. Operates as a
+    * queue, in which the first element is popped out when the list
+    * saturates and a new element is added.
     */
-   std::unordered_map<int, const Connection> rejectedPeerTable_;
+   std::deque<RemoteAddress> rejectedPeerList_;
 
    /**
     * Maximum number of peers allowed in the peer table. 
     */
    size_t maxPeers_;
+
+   /**
+    * isRejectedPeer()
+    * - Return true iff this node has been rejected previously by the
+    *   specified peer.
+    * @param connection : connection to search for   
+    */
+    bool isRejectedPeer(const Connection& connection) const;
+
+    /**
+     * fetchConnectionInfoByRemoteAddress()
+     * - Return connection-info of the specified remote address.
+     * @param ipv4 : ipv4 address of remote (host byte order)  
+     * @param port : port of remote (host byte order)  
+     */
+    const ConnectionInfo* fetchConnectionInfoByRemoteAddress(uint32_t ipv4, uint16_t port) const;
 
   public:
     /**
@@ -59,11 +88,39 @@ class P2pTable {
    bool isPendingPeer(int peer_fd) const;
 
    /**
+    * hasRemote()
+    * - Returns true iff the table constins the specified remote address.
+    * @param ipv4 : ipv4 address of remote (host byte order)  
+    * @param port : port of remote (host byte order)  
+    */
+   bool hasRemote(uint32_t ipv4, uint16_t port) const;
+
+   /**
     * isRejectedPeer()
     * - Return true iff this node has been rejected previously by the
     *   specified peer.
+    * @param ipv4 : ipv4 address of remote (host byte order)  
+    * @param port : port of remote (host byte order)  
     */
-    bool isRejectedPeer(int peer_fd) const;
+    bool isRejectedPeer(uint32_t ipv4, uint16_t port) const;
+   
+    /**
+     * isConnectedPeer()
+     * - Return true iff the local node is connected to the
+     *   specified remote.
+     * @param ipv4 : ipv4 address of remote (host byte order)  
+     * @param port : port of remote (host byte order)  
+     */
+    bool isConnectedPeer(uint32_t ipv4, uint16_t port) const;
+    
+    /**
+     * isPendingPeer()
+     * - Return true iff the local node has a pending connection
+     *   with the specified remote.
+     * @param ipv4 : ipv4 address of remote (host byte order)  
+     * @param port : port of remote (host byte order)  
+     */
+    bool isPendingPeer(uint32_t ipv4, uint16_t port) const;
 
     /**
      * registerPendingPeer()

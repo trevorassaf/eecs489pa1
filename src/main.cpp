@@ -5,6 +5,7 @@
 #include <sys/types.h>     // u_short
 #include <arpa/inet.h>     // htons(), inet_ntoa()
 #include <iostream>
+#include <vector>
 
 #include "packets.h"
 #include "Service.h"
@@ -170,13 +171,6 @@ void autoJoin(
     int fd = *iter++;
     const Connection& connection = p2p_table.fetchConnectionByFd(fd);
 
-    fprintf(
-        stderr,
-        "Here's a peer to join with: %s:%d\n",
-        connection.getRemoteDomainName().c_str(),
-        connection.getRemotePort()
-    );
-
     peer_addr peer = 
         { connection.getRemoteIpv4(), connection.getRemotePort(), 0 };
     size_t peer_len = sizeof(peer);
@@ -289,12 +283,14 @@ void handleJoinRequest(const Service& service, P2pTable& p2p_table) {
  */
 void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
   
-  // Read header from peer
-  const Connection& connection = p2p_table.fetchConnectionByFd(fd);
+  // Read header from peer.
+  // WARNING: can't be reference because we will delete the original
+  // and access this connection again.
+  const Connection connection = p2p_table.fetchConnectionByFd(fd);
 
   fprintf(
       stderr,
-      "Received ack from %s:%d\n",
+      "\nReceived ack from %s:%d\n",
       connection.getRemoteDomainName().c_str(),
       connection.getRemotePort()
   );
@@ -365,32 +361,82 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
       }
       
       // Report join peer
+      std::string connection_type_str;
+      if (p2p_table.isConnectedPeer(peer.ipv4, peer.port)) {
+        connection_type_str = "connected";
+      } else if (p2p_table.isPendingPeer(peer.ipv4, peer.port)) {
+        connection_type_str = "pending"; 
+      } else if (p2p_table.isRejectedPeer(peer.ipv4, peer.port)) {
+        connection_type_str = "rejected"; 
+      } else {
+        connection_type_str = "available";
+      }
+
       fprintf(
           stderr,
-          "\t\t%s:%d\n",
+          "\t\t%s:%d (%s)\n",
           domain_name,
-          peer.port
+          peer.port,
+          connection_type_str.c_str()
+      );
+    }
+
+    // Register peer state change and notify user
+    if (header.type == REDIRECT) {
+      p2p_table.registerRejectedPeer(fd);  
+
+      fprintf(
+        stderr,
+        "\tJoin redirected! "
+      );
+    } else {
+      p2p_table.registerConnectedPeer(fd);
+      
+      fprintf(
+        stderr,
+        "\tJoin accepted! "
+      );
+    }
+
+    if (p2p_table.isFull()) {
+      fprintf(
+        stderr,
+        "Local peer table is full -- subsequent peering requests will be redirected.\n\n"
+      );
+    } else {
+      fprintf(
+        stderr,
+        "Local peer table has room -- attempting to connect to more peers.\n\n"
       );
     }
 
     // Attempt to saturate peer table with recommended peers
-    size_t num_available_peers = p2p_table.getMaxPeers() - p2p_table.getNumPeers();
-    size_t num_peers_to_process = 
-        (num_available_peers < header.num_peers)
-            ? num_available_peers
-            : header.num_peers;
+    auto remote_iter = peers_to_join.begin();
 
-    for (size_t i = 0; i < num_peers_to_process; ++i) {
-      const peer_addr peer = peers_to_join[i];
+    while (!p2p_table.isFull() && remote_iter != peers_to_join.end()) {
+      // Attempt connection if not in p2p-table
+      if (!p2p_table.hasRemote(remote_iter->ipv4, remote_iter->port)) {
+        
+        // Connect to peer
+        Connection new_peer = server_builder
+            .setRemoteIpv4Address(remote_iter->ipv4)
+            .setRemotePort(remote_iter->port)
+            .build();
+        
+        // Put connection in p2p table in pending state
+        p2p_table.registerPendingPeer(new_peer);
 
-      // Connect to peer
-      Connection connection = server_builder
-          .setRemoteIpv4Address(peer.ipv4)
-          .setRemotePort(peer.port)
-          .build();
-      
-      // Put connection in p2p table in pending state
-      p2p_table.registerPendingPeer(connection);
+        // Report peering attempt 
+        fprintf(
+            stderr,
+            "Connecting to peer %s:%d (referenced by %s:%d)\n",
+            new_peer.getRemoteDomainName().c_str(),
+            new_peer.getRemotePort(),
+            connection.getRemoteDomainName().c_str(),
+            connection.getRemotePort()
+        );
+      }
+      ++remote_iter;
     }
   }
 }
@@ -476,7 +522,7 @@ int main(int argc, char** argv) {
     // Report server info
     fprintf(
         stderr,
-        "Connected to peer %s:%d\n",
+        "Connecting to peer %s:%d\n",
         server.getRemoteDomainName().c_str(),
         server.getRemotePort() 
     );
@@ -497,7 +543,7 @@ int main(int argc, char** argv) {
   // Report service info
   fprintf(
       stderr,
-      "This peer address is %s:%d\n",
+      "\nThis peer address is %s:%d\n",
       service.getDomainName().c_str(),
       service.getPort()
   );

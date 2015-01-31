@@ -4,9 +4,28 @@ P2pTable::P2pTable(
     size_t size
 ) : 
     peerTable_(size),
-    rejectedPeerTable_(),
     maxPeers_(size)
 {}
+
+bool P2pTable::isRejectedPeer(const Connection& connection) const {
+  return isRejectedPeer(connection.getRemoteIpv4(), connection.getRemotePort());
+}
+
+const P2pTable::ConnectionInfo* P2pTable::fetchConnectionInfoByRemoteAddress(
+  uint32_t ipv4,
+  uint16_t port
+) const {
+ 
+  for (auto c_info : peerTable_) {
+    if (c_info.second.connection.getRemoteIpv4() == ipv4 &&
+        c_info.second.connection.getRemotePort() == port)
+    {
+      return &peerTable_.at(c_info.first);    
+    }
+  }
+
+  return NULL;
+}
 
 bool P2pTable::isConnectedPeer(int peer_fd) const {
   return peerTable_.count(peer_fd) && !peerTable_.at(peer_fd).is_pending;
@@ -16,22 +35,54 @@ bool P2pTable::isPendingPeer(int peer_fd) const {
   return peerTable_.count(peer_fd) && peerTable_.at(peer_fd).is_pending;
 }
 
-bool P2pTable::isRejectedPeer(int peer_fd) const {
-  return rejectedPeerTable_.count(peer_fd);
+bool P2pTable::hasRemote(uint32_t ipv4, uint16_t port) const {
+  // Check table of connected/pending peers
+  for (auto c_info : peerTable_) {
+    if (c_info.second.connection.getRemoteIpv4() == ipv4 &&
+        c_info.second.connection.getRemotePort() == port) 
+    {
+      return true;     
+    }
+  } 
+
+  // Finally, check set of rejected peers
+  return isRejectedPeer(ipv4, port);
+}
+
+bool P2pTable::isRejectedPeer(uint32_t ipv4, uint16_t port) const {
+  for (auto remote_address : rejectedPeerList_) {
+    if (remote_address.ipv4 == ipv4 &&
+        remote_address.port == port)
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool P2pTable::isConnectedPeer(uint32_t ipv4, uint16_t port) const {
+  const ConnectionInfo* c_info = fetchConnectionInfoByRemoteAddress(ipv4, port);
+  return c_info && !c_info->is_pending;
+}
+
+bool P2pTable::isPendingPeer(uint32_t ipv4, uint16_t port) const {
+  const ConnectionInfo* c_info = fetchConnectionInfoByRemoteAddress(ipv4, port);
+  return c_info && c_info->is_pending;
 }
 
 void P2pTable::registerPendingPeer(const Connection& peer) {
   // Fail because 'peer' is already registered in this table.
   assert(!isConnectedPeer(peer.getFd()) && 
       !isPendingPeer(peer.getFd()) && 
-      !isRejectedPeer(peer.getFd()));
+      !isRejectedPeer(peer));
 
   peerTable_.emplace(peer.getFd(), ConnectionInfo{peer, true});
 }
 
 void P2pTable::registerConnectedPeer(const Connection& peer) {
   // 'peer' must be in pending state before transitioning to connected state
-  assert(!isRejectedPeer(peer.getFd()) &&
+  assert(!isRejectedPeer(peer) &&
       !isConnectedPeer(peer.getFd()));
 
   peerTable_.emplace(peer.getFd(), ConnectionInfo{peer, false});
@@ -39,20 +90,40 @@ void P2pTable::registerConnectedPeer(const Connection& peer) {
 
 void P2pTable::registerConnectedPeer(int peer_fd) {
   // 'peer' must be in pending state before transitioning to connected state
-  assert(isPendingPeer(peer_fd) &&
-      !isRejectedPeer(peer_fd) &&
-      !isConnectedPeer(peer_fd));
+  assert(isPendingPeer(peer_fd));
+ 
+  ConnectionInfo& c_info = peerTable_.at(peer_fd);
 
-  peerTable_.at(peer_fd).is_pending = false;
+  // Fail because the peer is registered as rejected when it should
+  // be pending
+  assert(!isRejectedPeer(c_info.connection));
+
+  c_info.is_pending = false;
 }
 
 void P2pTable::registerRejectedPeer(int peer_fd) {
   // 'peer' must be in pending state before transitioning to rejected state
-  assert(isPendingPeer(peer_fd) &&
-      !isRejectedPeer(peer_fd) &&
-      !isConnectedPeer(peer_fd));
+  assert(isPendingPeer(peer_fd));
 
-  rejectedPeerTable_.emplace(peer_fd, peerTable_.at(peer_fd).connection);
+  ConnectionInfo& c_info = peerTable_.at(peer_fd);
+
+  // Fail because the peer is registered as rejected when it should
+  // be pending
+  assert(!isRejectedPeer(c_info.connection));
+
+  // Pop first element if list is full
+  if (rejectedPeerList_.size() == MAX_REJECTED) {
+    rejectedPeerList_.pop_front(); 
+  }
+
+  // Push new rejected peer
+  rejectedPeerList_.push_back(
+      RemoteAddress{
+          c_info.connection.getRemoteIpv4(),
+          c_info.connection.getRemotePort()
+      }
+  );
+
   peerTable_.erase(peer_fd);
 }
 
