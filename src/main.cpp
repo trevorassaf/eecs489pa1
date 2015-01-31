@@ -121,15 +121,15 @@ void setCliParam(CliOption opt, char* cli_param_str, size_t& max_peers, fqdn& re
 }
 
 /**
- * connectToPeer()
- * - Establish connection to remote.
+ * connectToFirstPeer()
+ * - Establish connection to first peer. Enables address/port for resuse.
  * @peer remote_fqdn : fqdn of target peer 
  */
-Connection connectToPeer(const fqdn& remote_fqdn) {
+Connection connectToFirstPeer(const fqdn& remote_fqdn) {
   ServerBuilder builder;
   return builder
-      .setDomainName(remote_fqdn.name)
-      .setPort(remote_fqdn.port)
+      .setRemoteDomainName(remote_fqdn.name)
+      .setRemotePort(remote_fqdn.port)
       .enableAddressReuse()
       .build();
 }
@@ -282,10 +282,12 @@ void handleJoinRequest(const Service& service, P2pTable& p2p_table) {
 /**
  * handleIncomingMessage()
  * - Process message from peer.
+ * @param service_port : port that service is running on (host-byte-order).
+ *    All outgoing connections should bind to this local port.
  * @param fd : socket fd
  * @param p2p_table : peer node registry
  */
-void handleIncomingMessage(int fd, P2pTable& p2p_table) {
+void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
   
   // Read header from peer
   const Connection& connection = p2p_table.fetchConnectionByFd(fd);
@@ -326,7 +328,13 @@ void handleIncomingMessage(int fd, P2pTable& p2p_table) {
     const char* message_cstr = message.c_str();
     std::vector<peer_addr> peers_to_join;
     peers_to_join.reserve(header.num_peers);
+   
+    // Bind outgoing connections to the same port that this node
+    // is lisetening on
     ServerBuilder server_builder;
+    server_builder
+      .setLocalPort(service_port)
+      .enableAddressReuse();
 
     fprintf(stderr, "\twhich is peered with %i peers:\n", header.num_peers);
 
@@ -335,32 +343,54 @@ void handleIncomingMessage(int fd, P2pTable& p2p_table) {
       peer_addr peer;
       memcpy(&peer, message_cstr + i, peer_addr_size);
       peers_to_join.push_back(peer);
+
+      // Fetch domain name of recommended peer
+      struct sockaddr_in addr;
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(peer.port);
+      addr.sin_addr.s_addr = htonl(peer.ipv4);
+      
+      char domain_name[PR_MAXFQDN + 1];
+      memset(domain_name, 0, PR_MAXFQDN + 1);
+      if (::getnameinfo(
+        (struct sockaddr *) &addr,
+        sizeof(addr),
+        domain_name,
+        PR_MAXFQDN,
+        NULL,
+        0,
+        0) == -1)
+      {
+        throw SocketException("Failed to fetch remote host domain name"); 
+      }
       
       // Report join peer
       fprintf(
           stderr,
           "\t\t%s:%d\n",
-          connection.getRemoteDomainName().c_str(),
-          connection.getRemotePort()
+          domain_name,
+          peer.port
       );
-      // TODO write socket code for retrieving host name
     }
 
+    // Attempt to saturate peer table with recommended peers
     size_t num_available_peers = p2p_table.getMaxPeers() - p2p_table.getNumPeers();
     size_t num_peers_to_process = 
         (num_available_peers < header.num_peers)
             ? num_available_peers
             : header.num_peers;
 
-    for (int i = 0; i < num_peers_to_process; ++i) {
-      // Attempt connection to recommended peer
+    for (size_t i = 0; i < num_peers_to_process; ++i) {
+      const peer_addr peer = peers_to_join[i];
+
+      // Connect to peer
       Connection connection = server_builder
-          .setIpv4Address(peer.ipv4)
-          .setPort(peer.port)
+          .setRemoteIpv4Address(peer.ipv4)
+          .setRemotePort(peer.port)
           .build();
       
       // Put connection in p2p table in pending state
-      p2p_table.registerPendingConnection(connection);
+      p2p_table.registerPendingPeer(connection);
     }
   }
 }
@@ -406,7 +436,7 @@ void runP2pService(const Service& service, P2pTable& p2p_table) {
     // Handle messages from peer nodes
     for (int fd : peering_fds) {
       if (FD_ISSET(fd, &rset)) {
-        handleIncomingMessage(fd, p2p_table);
+        handleIncomingMessage(service.getPort(), fd, p2p_table);
       } 
     }
 
@@ -440,7 +470,7 @@ int main(int argc, char** argv) {
 
   // Connect to peer, if instructed by user. 
   if (!remote_fqdn.name.empty()) {
-    Connection server = connectToPeer(remote_fqdn);
+    Connection server = connectToFirstPeer(remote_fqdn);
     port = server.getLocalPort();
 
     // Report server info

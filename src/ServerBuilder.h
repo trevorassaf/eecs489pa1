@@ -19,27 +19,32 @@ class ServerBuilder {
     /**
      * Domain name of target.
      */
-    std::string domainName_;
+    std::string remoteDomainName_;
 
     /**
      * Port of target server in host-byte-order.
      */
-    uint16_t port_;
+    uint16_t localPort_, remotePort_;
+
+    /**
+     * Specifies if a local port has been indicated.
+     */
+    bool hasLocalPort_;
 
     /**
      * Ipv4 address of target in host-byte-order.
      */
-    uint32_t ipv4Address_;
+    uint32_t remoteIpv4Address_;
     
     /**
-     * Specifies if IPv4 address is provided.
+     * Specifies if IPv4 address of remote machine is provided.
      */
-    bool hasIpv4Address_;
+    bool hasRemoteIpv4Address_;
 
     /**
      * Indicates whether the socket's address may be reused or not.
      */
-    bool shouldReuseAddress_;
+    bool shouldEnableAddressReuse_;
 
   public:
     /**
@@ -49,24 +54,32 @@ class ServerBuilder {
     ServerBuilder();
 
     /**
-     * setDomainName()
+     * setRemoteDomainName()
      * - Establish domain name.
      */
-    ServerBuilder& setDomainName(const std::string& domain_name);
+    ServerBuilder& setRemoteDomainName(const std::string& domain_name);
+    
+    /**
+     * setLocalPort()
+     * - Set local port. Means that socket must bind() before
+     *   calling connect()
+     * @param port : local port in host-byte-order  
+     */
+    ServerBuilder& setLocalPort(uint16_t port);
 
     /**
-     * setPort()
+     * setRemotePort()
      * - Set target's port.
      * @param port : port value in host-byte-order  
      */
-    ServerBuilder& setPort(uint16_t port);
+    ServerBuilder& setRemotePort(uint16_t port);
 
     /**
-     * setIpv4Address()
+     * setRemoteIpv4Address()
      * - Specify address of target in ipv4 format.
      * @param ipv4_addr : host's ipv4 address in host-byte-order
      */
-    ServerBuilder& setIpv4Address(uint32_t ipv4_addr);
+    ServerBuilder& setRemoteIpv4Address(uint32_t ipv4_addr);
 
     /**
      * enableAddressReuse()

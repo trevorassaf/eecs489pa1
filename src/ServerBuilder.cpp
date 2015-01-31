@@ -1,31 +1,43 @@
 #include "ServerBuilder.h"
 
-ServerBuilder::ServerBuilder()
-    : port_(0), ipv4Address_(0), hasIpv4Address_(false), shouldReuseAddress_(false)  {}
+ServerBuilder::ServerBuilder() :
+  localPort_(0),
+  remotePort_(0),
+  hasLocalPort_(false),
+  remoteIpv4Address_(0),
+  hasRemoteIpv4Address_(false),
+  shouldEnableAddressReuse_(false) 
+{}
 
-ServerBuilder& ServerBuilder::setDomainName(const std::string& domain_name) {
-  domainName_ = domain_name;
+ServerBuilder& ServerBuilder::setRemoteDomainName(const std::string& domain_name) {
+  remoteDomainName_ = domain_name;
   return *this;
 }
 
-ServerBuilder& ServerBuilder::setPort(uint16_t port) {
-  port_ = port;
+ServerBuilder& ServerBuilder::setLocalPort(uint16_t port) {
+  localPort_ = port;
+  hasLocalPort_ = true;
   return *this;
 }
 
-ServerBuilder& ServerBuilder::setIpv4Address(uint32_t ipv4_addr) {
-  ipv4Address_ = ipv4_addr;
-  hasIpv4Address_ = true;
+ServerBuilder& ServerBuilder::setRemotePort(uint16_t port) {
+  remotePort_ = port;
+  return *this;
+}
+
+ServerBuilder& ServerBuilder::setRemoteIpv4Address(uint32_t ipv4_addr) {
+  remoteIpv4Address_ = ipv4_addr;
+  hasRemoteIpv4Address_ = true;
   return *this;
 }
 
 ServerBuilder& ServerBuilder::enableAddressReuse() {
-  shouldReuseAddress_ = true;
+  shouldEnableAddressReuse_ = true;
   return *this;
 }
 
 ServerBuilder& ServerBuilder::disableAddressReuse() {
-  shouldReuseAddress_ = false;
+  shouldEnableAddressReuse_ = false;
   return *this;
 }
 
@@ -38,7 +50,7 @@ Connection ServerBuilder::build() const {
   }
 
   // Configure socket for address reuse
-  if (shouldReuseAddress_) {
+  if (shouldEnableAddressReuse_) {
     int reuseaddr_optval = 1;
     // Configure address for reuse
     if (::setsockopt(
@@ -63,28 +75,42 @@ Connection ServerBuilder::build() const {
     }
   }
 
+  // Bind to local address
+  if (hasLocalPort_) {
+    struct sockaddr_in local_addr;
+    size_t local_addr_len = sizeof(local_addr);
+    memset(&local_addr, 0, local_addr_len);
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    local_addr.sin_port = htons(localPort_);
+
+    if (::bind(sd, (struct sockaddr *) &local_addr, local_addr_len) == -1) {
+      throw SocketException("Failed to bind local address for outgoing connection.");
+    }
+  }
+
   // Lookup peer server address
   struct sockaddr_in server;
   size_t size_server = sizeof(server);
 
   memset(&server, 0, size_server);
   server.sin_family = AF_INET;
-  server.sin_port = htons(port_);
+  server.sin_port = htons(remotePort_);
 
   // Identify target server by ipv4 address or domain name
-  if (hasIpv4Address_) {
-    server.sin_addr.s_addr = htonl(ipv4Address_);  
+  if (hasRemoteIpv4Address_) {
+    server.sin_addr.s_addr = htonl(remoteIpv4Address_);  
   } else {
     // Must specify 'domain name' if not using ip
-    assert(!domainName_.empty());
+    assert(!remoteDomainName_.empty());
 
-    struct hostent *sp = ::gethostbyname(domainName_.c_str());
+    struct hostent *sp = ::gethostbyname(remoteDomainName_.c_str());
     memcpy(&server.sin_addr, sp->h_addr, sp->h_length);
   }
 
   // Connect to peer server
   if (::connect(sd, (struct sockaddr *) &server, size_server) == -1) {
-    throw SocketException("Failed to connect to peer server: " + domainName_);
+    throw SocketException("Failed to connect to peer server: " + remoteDomainName_);
   }
 
   return Connection(sd);
