@@ -29,7 +29,7 @@ void Service::initService() {
     throw SocketException("Failed to fetch socket information in 'getsockname'");
   }
 
-  port_ = sin.sin_port;
+  port_ = ntohs(sin.sin_port);
   
   char hostname_buff[MAXFQDN + 1];
   memset(hostname_buff, 0, MAXFQDN);
@@ -65,7 +65,13 @@ const Connection Service::accept() const {
   // Configure socket to linger
   if (shouldLinger_) {
     struct linger so_linger = {true, (int) lingerDuration_}; 
-    if (::setsockopt(sd, SOL_SOCKET, SO_LINGER, &so_linger, sizeof(so_linger)) == -1) {
+    if (::setsockopt(
+          sd,
+          SOL_SOCKET,
+          SO_LINGER,
+          &so_linger,
+          sizeof(so_linger)) == -1
+    ) {
       throw SocketException("Failed to configure socket for linger.");
     }
   }

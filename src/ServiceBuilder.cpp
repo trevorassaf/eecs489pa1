@@ -7,7 +7,7 @@ ServiceBuilder::ServiceBuilder() :
     isLingerEnabled_(false),
     lingerDuration_(0) {}
 
-ServiceBuilder& ServiceBuilder::setPort(u_short port) {
+ServiceBuilder& ServiceBuilder::setPort(uint16_t port) {
   port_ = port;
   return *this;
 }
@@ -40,7 +40,7 @@ ServiceBuilder& ServiceBuilder::disableLinger() {
 
 const Service ServiceBuilder::build() const {
   // Initialize socket
-  int sd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+  int sd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sd == -1) {
     throw SocketException("Failed to init socket");
   }
@@ -48,7 +48,8 @@ const Service ServiceBuilder::build() const {
   // Configure socket for address resuse
   if (isAddressReuseEnabled_) {
     int reuseaddr_optval = 1;
-    if (setsockopt(
+    // Configure address for reuse
+    if (::setsockopt(
           sd,
           SOL_SOCKET,
           SO_REUSEADDR,
@@ -57,6 +58,17 @@ const Service ServiceBuilder::build() const {
     ) {
       throw SocketException("Failed to configure socket for address reuse");
     }
+   
+    // Configure port for reuse
+    if (::setsockopt(
+          sd,
+          SOL_SOCKET,
+          SO_REUSEPORT,
+          &reuseaddr_optval,
+          sizeof(reuseaddr_optval)) == -1
+    ) {
+      throw SocketException("Failed to configure socket for port reuse");
+    }
   }
 
   // Bind socket
@@ -64,14 +76,14 @@ const Service ServiceBuilder::build() const {
   memset(&self, 0, sizeof(sockaddr_in));
   self.sin_family = AF_INET;
   self.sin_addr.s_addr = INADDR_ANY;
-  self.sin_port = port_;
+  self.sin_port = htons(port_);
   
-  if (bind(sd, (struct sockaddr *) &self, sizeof(self)) == -1) {
+  if (::bind(sd, (struct sockaddr *) &self, sizeof(self)) == -1) {
     throw SocketException("Failed to bind socket");
   }
 
   // Listen on socket
-  if (listen(sd, backlog_) == -1) {
+  if (::listen(sd, backlog_) == -1) {
     throw SocketException("Failed to listen on socket");
   }
 

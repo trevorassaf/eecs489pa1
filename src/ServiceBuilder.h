@@ -19,9 +19,10 @@ class ServiceBuilder {
 
   private:
     /**
-     * Port of service. If 0, then start service on ephemeral port.
+     * Port of service in host-byte-order. If 0, then start service 
+     * on ephemeral port.
      */
-    u_short port_;
+    uint16_t port_;
 
     /**
      * Maximum allowed queue length for incomming connections.
@@ -52,9 +53,10 @@ class ServiceBuilder {
 
     /**
      * setPort()
-     * - Set port value. 
+     * - Sets port value. 
+     * @param port : port number in host-byte-order. 
      */
-    ServiceBuilder& setPort(u_short port);
+    ServiceBuilder& setPort(uint16_t port);
 
     /**
      * setBacklog()

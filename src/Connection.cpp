@@ -22,16 +22,16 @@ Connection::Connection(
     throw SocketException("Failed to determine local host port");
   }
 
-  localPort_ = addr.sin_port;
-  localIpv4_ = addr.sin_addr.s_addr;
+  localPort_ = ntohs(addr.sin_port);
+  localIpv4_ = ntohl(addr.sin_addr.s_addr);
 
   // Fetch remote host port 
   if (::getpeername(fileDescriptor_, (struct sockaddr *) &addr, &addr_len) == -1) {
     throw SocketException("Failed to lookup remote address.");
   }
 
-  remotePort_ = addr.sin_port;
-  remoteIpv4_ = addr.sin_addr.s_addr;
+  remotePort_ = ntohs(addr.sin_port);
+  remoteIpv4_ = ntohl(addr.sin_addr.s_addr);
 
   // Determine remote host domain name
   memset(hostname, 0, BUFFER_SIZE); 
@@ -63,7 +63,7 @@ const std::string Connection::read() const {
   return std::string(buffer, bytes_read);
 }
 
-unsigned int Connection::write(const std::string data) const {
+size_t Connection::write(const std::string data) const {
   int bytes_sent = ::send(fileDescriptor_, data.c_str(), data.size(), 0);
   if (bytes_sent == -1) {
     throw SocketException("Bad write to socket");
@@ -72,11 +72,11 @@ unsigned int Connection::write(const std::string data) const {
   return data.size() - bytes_sent;
 }
 
-u_short Connection::getLocalPort() const {
+uint16_t Connection::getLocalPort() const {
   return localPort_;
 }
 
-u_short Connection::getRemotePort() const {
+uint16_t Connection::getRemotePort() const {
   return remotePort_;
 }
 
@@ -98,17 +98,19 @@ bool Connection::operator==(const Connection& other) {
   return remotePort_ == other.remotePort_ &&
     localPort_ == other.localPort_ &&
     remoteDomainName_ == other.remoteDomainName_ &&
-    localDomainName_ == other.localDomainName_;
+    localDomainName_ == other.localDomainName_ &&
+    localIpv4_ == other.localIpv4_ &&
+    remoteIpv4_ == other.remoteIpv4_;
 }
 
 bool Connection::operator!=(const Connection& other) {
   return !(*this == other); 
 }
 
-int Connection::getLocalIpv4() const {
+uint32_t Connection::getLocalIpv4() const {
   return localIpv4_;
 }
 
-int Connection::getRemoteIpv4() const {
+uint32_t Connection::getRemoteIpv4() const {
   return remoteIpv4_;
 }

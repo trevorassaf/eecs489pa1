@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <assert.h>
 #include <unistd.h>        // getopt(), STDIN_FILENO, gethostname()
 #include <signal.h>        // signal()
 #include <netdb.h>         // gethostbyname(), gethostbyaddr()
@@ -21,9 +22,19 @@ class ServerBuilder {
     std::string domainName_;
 
     /**
-     * Port of target server in network-byte-order.
+     * Port of target server in host-byte-order.
      */
-    u_short port_;
+    uint16_t port_;
+
+    /**
+     * Ipv4 address of target in host-byte-order.
+     */
+    uint32_t ipv4Address_;
+    
+    /**
+     * Specifies if IPv4 address is provided.
+     */
+    bool hasIpv4Address_;
 
     /**
      * Indicates whether the socket's address may be reused or not.
@@ -41,13 +52,21 @@ class ServerBuilder {
      * setDomainName()
      * - Establish domain name.
      */
-    ServerBuilder& setDomainName(const std::string domain_name);
+    ServerBuilder& setDomainName(const std::string& domain_name);
 
     /**
      * setPort()
-     * - Establish port in network-byte-order. 
+     * - Set target's port.
+     * @param port : port value in host-byte-order  
      */
-    ServerBuilder& setPort(u_short port);
+    ServerBuilder& setPort(uint16_t port);
+
+    /**
+     * setIpv4Address()
+     * - Specify address of target in ipv4 format.
+     * @param ipv4_addr : host's ipv4 address in host-byte-order
+     */
+    ServerBuilder& setIpv4Address(uint32_t ipv4_addr);
 
     /**
      * enableAddressReuse()

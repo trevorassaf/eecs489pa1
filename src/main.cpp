@@ -22,7 +22,8 @@
 #define PR_MAXPEERS_FLAG 'n'
 #define PR_CLI_OPT_PREFIX '-'
 
-#define PR_QLEN 10 
+#define PR_QLEN   10 
+#define PR_LINGER 2
 
 #define PM_VERS 0x1
 
@@ -42,11 +43,11 @@ enum MessageType {
 enum CliOption {P, N};
 
 /**
- * FQDN fields.
+ * FQDN field pair.
  */
 typedef struct {
   std::string name;     // host domain name 
-  u_short port;    // port in network byte order
+  uint16_t port;        // port in host-byte-order 
 } fqdn;
 
 /**
@@ -69,13 +70,13 @@ void parseRemoteAddress(char* cli_input, fqdn& remote) {
 
   // Fail due to absent fqdn delimiter
   if (delim_idx == std::string::npos) {
-    fprintf(stderr, "Malformed FQDN. Must be of the form: <fqdn>:<port>"); 
+    fprintf(stderr, "Malformed FQDN. Must be of the form: <fqdn>:<port>\n"); 
     exit(1);
   }
  
   // Configure fqdn
   remote.name = fqdn_name_with_port.substr(0, delim_idx);
-  remote.port = (u_short) htons(atoi(fqdn_name_with_port.substr(delim_idx + 1).c_str()));
+  remote.port = atoi(fqdn_name_with_port.substr(delim_idx + 1).c_str());
 
   // Fail due to bad port
   net_assert(remote.port != 0, "Malformed port number. Port must be unsigned short.");
@@ -96,7 +97,7 @@ CliOption parseCliOption(char* cli_input) {
     case PR_MAXPEERS_FLAG:
       return N;
     default:
-      fprintf(stderr, "Invalid cli flag");
+      fprintf(stderr, "Invalid cli flag\n");
       exit(1);
   }
 }
@@ -114,25 +115,9 @@ void setCliParam(CliOption opt, char* cli_param_str, size_t& max_peers, fqdn& re
       parseMaxPeers(cli_param_str, max_peers);
       break;
     default:
-      fprintf(stderr, "Bad CliOption enum value");
+      fprintf(stderr, "Bad CliOption enum value\n");
       exit(1);
   }
-}
-
-/**
- * spawnPeerListener()
- * - Initialize service to listen for peering requests. If a peer 
- *     was not specified in the cli params, then 'port' should be 0
- *     and the socket should be initialized with an ephemeral port.
- * @param port : port number in network-byte-order
- */
-Service spawnPeerListener(u_short port) {
-  ServiceBuilder builder; 
-  return builder
-      .setPort(port)
-      .enableAddressReuse()
-      .setBacklog(PR_QLEN)
-      .build();
 }
 
 /**
@@ -162,17 +147,18 @@ void autoJoin(
   MessageType message_type) 
 {
   // Compose redirect message
-  autojoin_msg join_msg;
-  join_msg.vers = PM_VERS;
-  join_msg.type = message_type;
-
-  size_t join_header_len = sizeof(join_msg);
-  std::string message((char *) &join_msg, join_header_len); 
+  message_header join_header;
+  join_header.vers = PM_VERS;
+  join_header.type = message_type;
 
   size_t num_join_peers = 
       p2p_table.getNumPeers() < MAX_RPEERS 
           ? p2p_table.getNumPeers() 
           : MAX_RPEERS;
+  join_header.num_peers = num_join_peers;
+
+  size_t join_header_len = sizeof(join_header);
+  std::string message((char *) &join_header, join_header_len); 
 
   std::unordered_set<int> peering_fds = p2p_table.getPeeringFdSet();
   auto iter = peering_fds.begin();
@@ -184,8 +170,15 @@ void autoJoin(
     int fd = *iter++;
     const Connection& connection = p2p_table.fetchConnectionByFd(fd);
 
-    autojoin_peer peer = 
-        {connection.getRemoteIpv4(), (short) connection.getRemotePort(), 0};
+    fprintf(
+        stderr,
+        "Here's a peer to join with: %s:%d\n",
+        connection.getRemoteDomainName().c_str(),
+        connection.getRemotePort()
+    );
+
+    peer_addr peer = 
+        { connection.getRemoteIpv4(), connection.getRemotePort(), 0 };
     size_t peer_len = sizeof(peer);
 
     message += std::string((char *) &peer, peer_len);
@@ -214,7 +207,7 @@ void acceptPeerRequest(const Connection& connection, P2pTable& p2p_table) {
         stderr,
         "Failed while accepting peering request from %s:%d\n",
         connection.getRemoteDomainName().c_str(),
-        ntohs(connection.getRemotePort())
+        connection.getRemotePort()
     ); 
     
     connection.close();
@@ -226,7 +219,7 @@ void acceptPeerRequest(const Connection& connection, P2pTable& p2p_table) {
       stderr,
       "Connected from %s:%d\n",
       connection.getRemoteDomainName().c_str(),
-      ntohs(connection.getRemotePort())
+      connection.getRemotePort()
   ); 
 
   // Add new node to peer-table
@@ -248,7 +241,7 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
         stderr,
         "Failed while redirecting peering request from %s:%d\n",
         connection.getRemoteDomainName().c_str(),
-        ntohs(connection.getRemotePort())
+        connection.getRemotePort()
     ); 
 
     connection.close();
@@ -260,7 +253,7 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
       stderr,
       "Peer table full: %s:%d redirected\n",
       connection.getRemoteDomainName().c_str(),
-      ntohs(connection.getRemotePort())
+      connection.getRemotePort()
   ); 
 
   connection.close();
@@ -269,7 +262,7 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
 /**
  * handleJoinRequest()
  * - Accept peering request, if space available. Redirect, otherwise.
- * @param service : service listening for incomming connections
+ * @param service : service listening for incoming connections
  * @param p2p_table : peer node registry
  */
 void handleJoinRequest(const Service& service, P2pTable& p2p_table) {
@@ -287,11 +280,100 @@ void handleJoinRequest(const Service& service, P2pTable& p2p_table) {
 }
 
 /**
+ * handleIncomingMessage()
+ * - Process message from peer.
+ * @param fd : socket fd
+ * @param p2p_table : peer node registry
+ */
+void handleIncomingMessage(int fd, P2pTable& p2p_table) {
+  
+  // Read header from peer
+  const Connection& connection = p2p_table.fetchConnectionByFd(fd);
+
+  fprintf(
+      stderr,
+      "Received ack from %s:%d\n",
+      connection.getRemoteDomainName().c_str(),
+      connection.getRemotePort()
+  );
+  
+  message_header header;
+  size_t message_header_len = sizeof(header);
+  std::string message;
+  
+  while (message.size() < message_header_len) {
+    message += connection.read();
+  }
+
+  // Deserialize message and transform fields to host-byte-order
+  memcpy(&header, message.c_str(), message_header_len);
+  header.num_peers = header.num_peers;
+
+  // Read auto-join nodes from peer
+  if (header.num_peers) {
+    // Fail due to negative 'num-peers'
+    assert(header.num_peers > 0);
+    
+    size_t peer_addr_size = sizeof(peer_addr);
+    size_t message_body_len = peer_addr_size * header.num_peers;
+    
+    message = message.substr(message_header_len);
+    
+    while (message.size() != message_body_len) {
+      message += connection.read();
+    }
+
+    const char* message_cstr = message.c_str();
+    std::vector<peer_addr> peers_to_join;
+    peers_to_join.reserve(header.num_peers);
+    ServerBuilder server_builder;
+
+    fprintf(stderr, "\twhich is peered with %i peers:\n", header.num_peers);
+
+    // Deserialize message body
+    for (size_t i = 0; i < message_body_len; i += peer_addr_size) {
+      peer_addr peer;
+      memcpy(&peer, message_cstr + i, peer_addr_size);
+      peers_to_join.push_back(peer);
+      
+      // Report join peer
+      fprintf(
+          stderr,
+          "\t\t%s:%d\n",
+          connection.getRemoteDomainName().c_str(),
+          connection.getRemotePort()
+      );
+      // TODO write socket code for retrieving host name
+    }
+
+    size_t num_available_peers = p2p_table.getMaxPeers() - p2p_table.getNumPeers();
+    size_t num_peers_to_process = 
+        (num_available_peers < header.num_peers)
+            ? num_available_peers
+            : header.num_peers;
+
+    for (int i = 0; i < num_peers_to_process; ++i) {
+      // Attempt connection to recommended peer
+      Connection connection = server_builder
+          .setIpv4Address(peer.ipv4)
+          .setPort(peer.port)
+          .build();
+      
+      // Put connection in p2p table in pending state
+      p2p_table.registerPendingConnection(connection);
+    }
+  }
+}
+
+/**
  * runP2pService()
  * - Activate p2p service.
+ * @param service : service listening for incoming connections
+ * @param p2p_table : peer node registry
  */
 void runP2pService(const Service& service, P2pTable& p2p_table) {
   
+  // Main program event-loop 
   do {
     // Compose fd-set and find max-fd
     fd_set rset;
@@ -311,12 +393,12 @@ void runP2pService(const Service& service, P2pTable& p2p_table) {
       FD_SET(fd, &rset);
     }
 
-    // Wait on peer nods for incomming traffic
+    // Wait on peer nods for incoming traffic
     if (select(max_fd + 1, &rset, NULL, NULL, NULL) == -1) {
       throw SocketException("Failed while waiting on peer nodes");
     }
 
-    // Handle incomming connection
+    // Handle incoming connection
     if (FD_ISSET(service.getFd(), &rset)) {
       handleJoinRequest(service, p2p_table);
     }
@@ -324,7 +406,7 @@ void runP2pService(const Service& service, P2pTable& p2p_table) {
     // Handle messages from peer nodes
     for (int fd : peering_fds) {
       if (FD_ISSET(fd, &rset)) {
-     // TODO this stuff 
+        handleIncomingMessage(fd, p2p_table);
       } 
     }
 
@@ -349,24 +431,24 @@ int main(int argc, char** argv) {
     setCliParam(first_cli_option, *(argv + 2), max_peers, remote_fqdn);
     setCliParam(second_cli_option, *(argv + 4), max_peers, remote_fqdn);
   } else if (argc != 1) {
-    fprintf(stderr, "Invalid cli args: ./peer [-p <fqdn>:<port>] [-n <max peers>]"); 
+    fprintf(stderr, "Invalid cli args: ./peer [-p <fqdn>:<port>] [-n <max peers>]\n"); 
     exit(1);
   }
  
   P2pTable peer_table(max_peers);
-  u_short port = 0;
+  uint16_t port = 0;
 
   // Connect to peer, if instructed by user. 
   if (!remote_fqdn.name.empty()) {
     Connection server = connectToPeer(remote_fqdn);
-    port = server.getRemotePort();
+    port = server.getLocalPort();
 
     // Report server info
     fprintf(
         stderr,
         "Connected to peer %s:%d\n",
         server.getRemoteDomainName().c_str(),
-        ntohs(port)
+        server.getRemotePort() 
     );
 
     // Add user-specified peer to table (first one)
@@ -374,14 +456,20 @@ int main(int argc, char** argv) {
   }
 
   // Allow other peers to connect 
-  Service service = spawnPeerListener(port);
+  ServiceBuilder service_builder;
+  Service service = service_builder
+      .setPort(port)
+      .setBacklog(PR_QLEN)
+      .enableAddressReuse()
+      .enableLinger(PR_LINGER)
+      .build();
 
   // Report service info
   fprintf(
       stderr,
-      "This peer address is %s:%d/n",
+      "This peer address is %s:%d\n",
       service.getDomainName().c_str(),
-      ntohs(service.getPort())
+      service.getPort()
   );
 
   runP2pService(service, peer_table);

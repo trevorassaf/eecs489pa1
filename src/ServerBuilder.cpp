@@ -1,15 +1,21 @@
 #include "ServerBuilder.h"
 
 ServerBuilder::ServerBuilder()
-    : port_(0), shouldReuseAddress_(false) {}
+    : port_(0), ipv4Address_(0), hasIpv4Address_(false), shouldReuseAddress_(false)  {}
 
-ServerBuilder& ServerBuilder::setDomainName(const std::string domain_name) {
+ServerBuilder& ServerBuilder::setDomainName(const std::string& domain_name) {
   domainName_ = domain_name;
   return *this;
 }
 
-ServerBuilder& ServerBuilder::setPort(u_short port) {
+ServerBuilder& ServerBuilder::setPort(uint16_t port) {
   port_ = port;
+  return *this;
+}
+
+ServerBuilder& ServerBuilder::setIpv4Address(uint32_t ipv4_addr) {
+  ipv4Address_ = ipv4_addr;
+  hasIpv4Address_ = true;
   return *this;
 }
 
@@ -24,6 +30,8 @@ ServerBuilder& ServerBuilder::disableAddressReuse() {
 }
 
 Connection ServerBuilder::build() const {
+  
+  // Initialize socket
   int sd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sd == -1) {
     throw SocketException("Failed to start server socket.");
@@ -32,11 +40,26 @@ Connection ServerBuilder::build() const {
   // Configure socket for address reuse
   if (shouldReuseAddress_) {
     int reuseaddr_optval = 1;
+    // Configure address for reuse
     if (::setsockopt(
-          sd, SOL_SOCKET, SO_REUSEADDR,
+          sd,
+          SOL_SOCKET,
+          SO_REUSEADDR,
           &reuseaddr_optval,
-          sizeof(int)) == -1) {
-      throw SocketException("Failed to configure socket for lingering.");
+          sizeof(int)) == -1
+    ) {
+      throw SocketException("Failed to configure socket for address reuse.");
+    }
+    
+    // Configure port for reuse
+    if (::setsockopt(
+          sd,
+          SOL_SOCKET,
+          SO_REUSEPORT,
+          &reuseaddr_optval,
+          sizeof(int)) == -1
+    ) {
+      throw SocketException("Failed to configure socket for port reuse.");
     }
   }
 
@@ -46,10 +69,18 @@ Connection ServerBuilder::build() const {
 
   memset(&server, 0, size_server);
   server.sin_family = AF_INET;
-  server.sin_port = port_;
+  server.sin_port = htons(port_);
 
-  struct hostent *sp = ::gethostbyname(domainName_.c_str());
-  memcpy(&server.sin_addr, sp->h_addr, sp->h_length);
+  // Identify target server by ipv4 address or domain name
+  if (hasIpv4Address_) {
+    server.sin_addr.s_addr = htonl(ipv4Address_);  
+  } else {
+    // Must specify 'domain name' if not using ip
+    assert(!domainName_.empty());
+
+    struct hostent *sp = ::gethostbyname(domainName_.c_str());
+    memcpy(&server.sin_addr, sp->h_addr, sp->h_length);
+  }
 
   // Connect to peer server
   if (::connect(sd, (struct sockaddr *) &server, size_server) == -1) {

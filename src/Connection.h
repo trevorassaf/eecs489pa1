@@ -23,14 +23,14 @@ class Connection {
     int fileDescriptor_;
 
     /**
-     * Ports for local and remote connections in network-byte-order.
+     * Ports for local and remote connections in host-byte-order.
      */
-    u_short localPort_, remotePort_;
+    uint16_t localPort_, remotePort_;
 
     /**
-     * Ipv4 address for local and remote connections in network-byte-order.
+     * Ipv4 address for local and remote connections in host-byte-order.
      */
-    int localIpv4_, remoteIpv4_;
+    uint32_t localIpv4_, remoteIpv4_;
 
     /**
      * Domain names for local and remote hosts.
@@ -62,31 +62,31 @@ class Connection {
      * - Write data to socket.
      * @param data : string of data to write to socket
      */
-    unsigned int write(const std::string data) const;
+    size_t write(const std::string data) const;
 
     /**
      * getLocalPort()
-     * - Return port of local connection.
+     * - Return port of local connection in host-byte-order.
      */
-    u_short getLocalPort() const;
+    uint16_t getLocalPort() const;
 
     /**
      * getRemotePort()
-     * - Return port that remote is listening on.
+     * - Return port that remote is listening on in host-byte-order.
      */
-    u_short getRemotePort() const;
+    uint16_t getRemotePort() const;
 
     /**
      * getRemoteIpv4()
-     * - Return ipv4 of local host.
+     * - Return ipv4 of local host in host-byte-order.
      */
-    int getLocalIpv4() const;
+    uint32_t getLocalIpv4() const;
     
     /**
      * getRemoteIpv4()
-     * - Return ipv4 of remote.
+     * - Return ipv4 of remote in host-byte-order.
      */
-    int getRemoteIpv4() const;
+    uint32_t getRemoteIpv4() const;
 
     /**
      * getLocalDomainName()
