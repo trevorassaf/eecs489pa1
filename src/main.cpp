@@ -1,14 +1,18 @@
 #include <string>
+#include <stdio.h>         // fprintf(), perror(), fflush()
+#include <stdlib.h>        // atoi()
 #include <assert.h>        // assert()
 #include <sys/types.h>     // u_short
 #include <arpa/inet.h>     // htons(), inet_ntoa()
 #include <iostream>
 
+#include "packets.h"
 #include "Service.h"
 #include "ServiceBuilder.h"
 #include "ServerBuilder.h"
 #include "Connection.h"
 #include "SocketException.h"
+#include "P2pTable.h"
 
 #define PR_MAXPEERS 6
 #define PR_MAXFQDN 256
@@ -20,10 +24,26 @@
 
 #define PR_QLEN 10 
 
+#define PM_VERS 0x1
+
 #define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
 
+/**
+ * Message type codes.
+ */
+enum MessageType {
+  WELCOME  = 0x1,
+  REDIRECT = 0x2
+};
+
+/**
+ * Cli option types.
+ */
 enum CliOption {P, N};
 
+/**
+ * FQDN fields.
+ */
 typedef struct {
   std::string name;     // host domain name 
   u_short port;    // port in network byte order
@@ -33,7 +53,7 @@ typedef struct {
  *  parseMaxPeers()
  *  - Parse max-peers cli param.
  */
-void parseMaxPeers(char* cli_input, unsigned int& max_peers) {
+void parseMaxPeers(char* cli_input, size_t& max_peers) {
   max_peers = atoi(cli_input); 
   net_assert(max_peers > 1, "Invalid 'max-peers' specified.");
 }
@@ -85,7 +105,7 @@ CliOption parseCliOption(char* cli_input) {
  * setCliParam()
  * - Parse specified cli param from cli-input-string.
  */
-void setCliParam(CliOption opt, char* cli_param_str, unsigned int& max_peers, fqdn& remote) {
+void setCliParam(CliOption opt, char* cli_param_str, size_t& max_peers, fqdn& remote) {
   switch (opt) {
     case P:
       parseRemoteAddress(cli_param_str, remote);
@@ -130,19 +150,191 @@ Connection connectToPeer(const fqdn& remote_fqdn) {
 }
 
 /**
+ * autoJoin()
+ * - Supply peer with list of other peers to join.
+ * @param connection : network connection to requesting peer node  
+ * @param p2p_table : local table of connected peers 
+ * @param message_type : type of message to include in the header
+ */
+void autoJoin(
+  const Connection connection,
+  const P2pTable& p2p_table,
+  MessageType message_type) 
+{
+  // Compose redirect message
+  autojoin_msg join_msg;
+  join_msg.vers = PM_VERS;
+  join_msg.type = message_type;
+
+  size_t join_header_len = sizeof(join_msg);
+  std::string message((char *) &join_msg, join_header_len); 
+
+  size_t num_join_peers = 
+      p2p_table.getNumPeers() < MAX_RPEERS 
+          ? p2p_table.getNumPeers() 
+          : MAX_RPEERS;
+
+  std::unordered_set<int> peering_fds = p2p_table.getPeeringFdSet();
+  auto iter = peering_fds.begin();
+
+  for (size_t i = 0; i < num_join_peers; ++i) {
+    // Fail because we ran out of fds
+    assert(iter != peering_fds.end());
+
+    int fd = *iter++;
+    const Connection& connection = p2p_table.fetchConnectionByFd(fd);
+
+    autojoin_peer peer = 
+        {connection.getRemoteIpv4(), (short) connection.getRemotePort(), 0};
+    size_t peer_len = sizeof(peer);
+
+    message += std::string((char *) &peer, peer_len);
+  }
+
+  // Send auto-join message to requesting peer
+  size_t remaining_chars = message.size(); 
+  while (remaining_chars) {
+    remaining_chars = connection.write(message);
+    message = message.substr(message.size() - remaining_chars);
+  }
+}
+
+/**
+ * acceptPeerRequest()
+ * - Local peer table has room, therefore accomodate the requesting peer.
+ * - Send 'autojoin message' contain the 'welcome' header.  
+ * @param connection : network connection to requesting peer node  
+ * @param p2p_table : local table of connected peers 
+ */
+void acceptPeerRequest(const Connection& connection, P2pTable& p2p_table) {
+  try {
+    autoJoin(connection, p2p_table, WELCOME);
+  } catch (SocketException& e) {
+    fprintf(
+        stderr,
+        "Failed while accepting peering request from %s:%d\n",
+        connection.getRemoteDomainName().c_str(),
+        ntohs(connection.getRemotePort())
+    ); 
+    
+    connection.close();
+    return;
+  } 
+  
+  // Notify user of new peer
+  fprintf(
+      stderr,
+      "Connected from %s:%d\n",
+      connection.getRemoteDomainName().c_str(),
+      ntohs(connection.getRemotePort())
+  ); 
+
+  // Add new node to peer-table
+  p2p_table.registerConnectedPeer(connection);
+}
+
+/**
+ * redirectPeer()
+ * - Local peer table is out of space, therefore redirect requesting peer.
+ * - Send 'autojoin message' contain the 'redirect' header.  
+ * @param connection : network connection to requesting peer node  
+ * @param p2p_table : local table of connected peers 
+ */
+void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
+  try {
+    autoJoin(connection, p2p_table, REDIRECT);
+  } catch (SocketException& e) {
+    fprintf(
+        stderr,
+        "Failed while redirecting peering request from %s:%d\n",
+        connection.getRemoteDomainName().c_str(),
+        ntohs(connection.getRemotePort())
+    ); 
+
+    connection.close();
+    return;
+  } 
+  
+  // Notify user of redirected peer
+  fprintf(
+      stderr,
+      "Peer table full: %s:%d redirected\n",
+      connection.getRemoteDomainName().c_str(),
+      ntohs(connection.getRemotePort())
+  ); 
+
+  connection.close();
+}
+
+/**
+ * handleJoinRequest()
+ * - Accept peering request, if space available. Redirect, otherwise.
+ * @param service : service listening for incomming connections
+ * @param p2p_table : peer node registry
+ */
+void handleJoinRequest(const Service& service, P2pTable& p2p_table) {
+ 
+  // Accept connection
+  const Connection connection = service.accept();
+
+  if (p2p_table.isFull()) {
+    // This node is saturated, redurect client peer
+    redirectPeer(connection, p2p_table);
+  } else {
+    // This node is unsaturated, accept the peering request 
+    acceptPeerRequest(connection, p2p_table);
+  }
+}
+
+/**
  * runP2pService()
  * - Activate p2p service.
  */
 void runP2pService(const Service& service, P2pTable& p2p_table) {
+  
   do {
+    // Compose fd-set and find max-fd
+    fd_set rset;
+    FD_ZERO(&rset);
+    FD_SET(service.getFd(), &rset);
     
+    int max_fd = service.getFd();
+    const std::unordered_set<int> peering_fds = p2p_table.getPeeringFdSet(); 
+
+    for (int fd : peering_fds) {
+      // Make new max-fd, if greater
+      if (fd > max_fd) {
+        max_fd = fd;
+      }
+      
+      // Add fd to fd-set
+      FD_SET(fd, &rset);
+    }
+
+    // Wait on peer nods for incomming traffic
+    if (select(max_fd + 1, &rset, NULL, NULL, NULL) == -1) {
+      throw SocketException("Failed while waiting on peer nodes");
+    }
+
+    // Handle incomming connection
+    if (FD_ISSET(service.getFd(), &rset)) {
+      handleJoinRequest(service, p2p_table);
+    }
+
+    // Handle messages from peer nodes
+    for (int fd : peering_fds) {
+      if (FD_ISSET(fd, &rset)) {
+     // TODO this stuff 
+      } 
+    }
+
   } while (true);
 }
 
 int main(int argc, char** argv) {
   
   // Parse command line arguments
-  unsigned int max_peers = PR_MAXPEERS;
+  size_t max_peers = PR_MAXPEERS;
   fqdn remote_fqdn; 
 
   if (argc == 3) {
@@ -161,6 +353,7 @@ int main(int argc, char** argv) {
     exit(1);
   }
  
+  P2pTable peer_table(max_peers);
   u_short port = 0;
 
   // Connect to peer, if instructed by user. 
@@ -176,7 +369,8 @@ int main(int argc, char** argv) {
         ntohs(port)
     );
 
-    // TODO add this to the table of peers
+    // Add user-specified peer to table (first one)
+    peer_table.registerPendingPeer(server);
   }
 
   // Allow other peers to connect 

@@ -28,6 +28,11 @@ class Connection {
     u_short localPort_, remotePort_;
 
     /**
+     * Ipv4 address for local and remote connections in network-byte-order.
+     */
+    int localIpv4_, remoteIpv4_;
+
+    /**
      * Domain names for local and remote hosts.
      */
     std::string localDomainName_, remoteDomainName_;
@@ -41,10 +46,10 @@ class Connection {
     explicit Connection(int file_descriptor); 
 
     /**
-     * getFileDescriptor()
+     * getFd()
      * - Return fild descriptor for socket.
      */
-    int getFileDescriptor() const;
+    int getFd() const;
 
     /**
      * read()
@@ -72,6 +77,18 @@ class Connection {
     u_short getRemotePort() const;
 
     /**
+     * getRemoteIpv4()
+     * - Return ipv4 of local host.
+     */
+    int getLocalIpv4() const;
+    
+    /**
+     * getRemoteIpv4()
+     * - Return ipv4 of remote.
+     */
+    int getRemoteIpv4() const;
+
+    /**
      * getLocalDomainName()
      * - Return domain name of localhost.
      */
@@ -88,4 +105,17 @@ class Connection {
      * - Close socket.
      */
     void close() const;
+
+    /**
+     * operator==
+     * - Return true iff the local/remote name/ports are equivalent.
+     */
+    bool operator==(const Connection& other);
+
+    /**
+     * operator!=
+     * - Return true iff operator== returns false.
+     */
+    bool operator!=(const Connection& other);
+
 };

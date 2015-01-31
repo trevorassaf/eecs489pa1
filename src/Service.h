@@ -68,10 +68,10 @@ class Service {
     explicit Service(int file_descriptor);
 
     /**
-     * getFileDescriptor()
+     * getFd()
      * - Return file descriptor.
      */
-    int getFileDescriptor() const;
+    int getFd() const;
 
     /**
      * getPort()

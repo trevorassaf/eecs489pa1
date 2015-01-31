@@ -23,6 +23,7 @@ Connection::Connection(
   }
 
   localPort_ = addr.sin_port;
+  localIpv4_ = addr.sin_addr.s_addr;
 
   // Fetch remote host port 
   if (::getpeername(fileDescriptor_, (struct sockaddr *) &addr, &addr_len) == -1) {
@@ -30,6 +31,7 @@ Connection::Connection(
   }
 
   remotePort_ = addr.sin_port;
+  remoteIpv4_ = addr.sin_addr.s_addr;
 
   // Determine remote host domain name
   memset(hostname, 0, BUFFER_SIZE); 
@@ -47,7 +49,7 @@ Connection::Connection(
   remoteDomainName_ = std::string(hostname);
 }
 
-int Connection::getFileDescriptor() const {
+int Connection::getFd() const {
   return fileDescriptor_;
 }
 
@@ -90,4 +92,23 @@ void Connection::close() const {
   if (::close(fileDescriptor_) == -1) {
     throw SocketException("Failed to close socket");
   }
+}
+
+bool Connection::operator==(const Connection& other) {
+  return remotePort_ == other.remotePort_ &&
+    localPort_ == other.localPort_ &&
+    remoteDomainName_ == other.remoteDomainName_ &&
+    localDomainName_ == other.localDomainName_;
+}
+
+bool Connection::operator!=(const Connection& other) {
+  return !(*this == other); 
+}
+
+int Connection::getLocalIpv4() const {
+  return localIpv4_;
+}
+
+int Connection::getRemoteIpv4() const {
+  return remoteIpv4_;
 }

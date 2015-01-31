@@ -4,36 +4,41 @@ OBJS = main.o \
 			 Service.o \
 			 ServerBuilder.o \
 			 Connection.o \
+			 P2pTable.o \
 			 SocketException.o
 HEADERS = ServiceBuilder.h \
 			 Service.h \
 			 ServerBuilder.h \
 			 Connection.h \
+			 P2pTable.h \
 			 SocketException.h
-CFLAGS = -Wall -Wno-deprecated
-LFLAGS = $(CFLAGS) 
+CXXFLAGS = -Wall -Wno-deprecated -std=c++11
+LFLAGS = $(CXXFLAGS) 
 EXE = peer
 
 peer: $(OBJS) 
 	$(CC) $(LFLAGS) -o $(EXE) $(OBJS)
 
 main.o: main.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -c main.cpp
+	$(CC) $(CXXFLAGS) -c main.cpp
 
 ServiceBuilder.o: ServiceBuilder.h Service.h SocketException.h
-	$(CC) $(CFLAGS) -c ServiceBuilder.cpp
+	$(CC) $(CXXFLAGS) -c ServiceBuilder.cpp
 
 Service.o: Service.h Connection.h SocketException.h
-	$(CC) $(CFLAGS) -c Service.cpp
+	$(CC) $(CXXFLAGS) -c Service.cpp
 
 ServerBuilder.o: ServerBuilder.h Connection.h SocketException.h
-	$(CC) $(CFLAGS) -c ServerBuilder.cpp
+	$(CC) $(CXXFLAGS) -c ServerBuilder.cpp
 
 Connection.o: Connection.h SocketException.h
-	$(CC) $(CFLAGS) -c Connection.cpp
+	$(CC) $(CXXFLAGS) -c Connection.cpp
+
+P2pTable.o: P2pTable.h Connection.h
+	$(CC) $(CXXFLAGS) -c P2pTable.cpp
 
 SocketException.o: SocketException.h
-	$(CC) $(CFLAGS) -c SocketException.cpp
+	$(CC) $(CXXFLAGS) -c SocketException.cpp
 
 clean:
 	\rm *.o $(EXE)

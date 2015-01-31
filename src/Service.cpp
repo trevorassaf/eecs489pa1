@@ -40,7 +40,7 @@ void Service::initService() {
   domainName_ = std::string(hostname_buff);
 }
 
-int Service::getFileDescriptor() const {
+int Service::getFd() const {
   return fileDescriptor_;
 }
 
@@ -64,7 +64,7 @@ const Connection Service::accept() const {
  
   // Configure socket to linger
   if (shouldLinger_) {
-    struct linger so_linger = {true, lingerDuration_}; 
+    struct linger so_linger = {true, (int) lingerDuration_}; 
     if (::setsockopt(sd, SOL_SOCKET, SO_LINGER, &so_linger, sizeof(so_linger)) == -1) {
       throw SocketException("Failed to configure socket for linger.");
     }
