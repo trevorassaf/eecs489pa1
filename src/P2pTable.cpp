@@ -158,3 +158,15 @@ const Connection& P2pTable::fetchConnectionByFd(int fd) const {
 
   return peerTable_.at(fd).connection;
 }
+
+const std::vector<const Connection*> P2pTable::fetchConnectedPeers() const {
+  std::vector<const Connection*> connected_peers;
+  
+  for (const auto& peer_table_entry : peerTable_) {
+    if (!peer_table_entry.second.is_pending) {
+      connected_peers.push_back(&(peer_table_entry.second.connection));
+    }
+  }
+
+  return connected_peers;
+}

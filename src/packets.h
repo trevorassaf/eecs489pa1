@@ -59,6 +59,16 @@ struct peer_addr {
   uint16_t port, reserved;
 };
 
+/**
+ * Packet for p2p image-network query.
+ */
+struct p2p_image_query_t {
+  packet_header_t header;
+  unsigned short search_id;
+  peer_addr orig_peer;
+  char file_name[NETIMG_MAXFNAME];
+};
+
 // TODO change this to use packet_header_t
 struct message_header {
   char vers, type;

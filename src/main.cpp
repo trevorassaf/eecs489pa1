@@ -277,31 +277,15 @@ bool isImageTransfer(const packet_header_t& header) {
 }
 
 /**
- * sendIqryPacket()
- * - Send iqry_t to specified target.
- * @param packet : imsg_t to send
- * @param connection : target to which to send packet
- */
-void sendIqryPacket(const iqry_t& packet, const Connection* connection) {
-  size_t bytes_remaining = sizeof(packet); 
-  std::string message( (char *) &packet, bytes_remaining);
-  while (bytes_remaining) {
-    bytes_remaining = connection->write(message);
-    message = message.substr(message.size() - bytes_remaining);
-  }
-}
-
-/**
  * sendImsgPacket()
  * - Send imsg_t to specified target.
  * @param packet : imsg_t to send
  * @param connection : target to which to send packet
  */
 void sendImsgPacket(const imsg_t& packet, const Connection* connection) {
-  size_t bytes_remaining = sizeof(packet); 
-  std::string message( (char *) &packet, bytes_remaining);
-  while (bytes_remaining) {
-    bytes_remaining = connection->write(message);
+  std::string message( (char *) &packet, sizeof(packet));
+  while (message.size()) {
+    size_t bytes_remaining = connection->write(message);
     message = message.substr(message.size() - bytes_remaining);
   }
 }
@@ -383,12 +367,77 @@ void returnImageToClient(
 
 /**
  * queryNetwork()
- * - Send out image query to the p2p network.
- * @param iqry_packet : packet for image query 
+ * - Initiate or forward image query to the p2p network. Registers packet as 'seen.'
+ *   Doesn't send packet if this node has seen this packet previously 
+ * @param iqry_packet : packet for image query (network-byte-order fields)
  * @param img_net : image network
  */
-void queryNetwork(const iqry_t& iqry_packet, ImageNetwork& img_net) {
+void queryNetwork(const p2p_image_query_t& p2p_query, ImageNetwork& img_net) {
 
+  // Drop this packet if we've seen it already
+  if (img_net.hasSeenP2pImageQuery(p2p_query)) {
+    // Report dropped packet
+    fprintf(
+      stderr,
+      "\tDropped packet due to duplication! (file: %s, search-id: %i, ipv4: %i, port: %i)\n",
+      p2p_query.file_name,
+      ntohs(p2p_query.search_id),
+      ntohl(p2p_query.orig_peer.ipv4),
+      ntohs(p2p_query.orig_peer.port)
+    );
+
+    return;
+  }
+
+  // Add this query to the image-network's history
+  img_net.addImageQuery(p2p_query); 
+
+  // Forward query to connected peers
+  const std::vector<const Connection*> connected_peers = img_net.getP2pTable().fetchConnectedPeers();
+
+  for (const Connection* peer : connected_peers) {
+    // Report forwarded image
+    fprintf(
+        stderr,
+        "\tForwarding p2p image query to %s:%d\n",
+        peer->getRemoteDomainName().c_str(),
+        peer->getRemotePort()
+    );
+
+    // Send query to connected peer
+    std::string message( (char *) &p2p_query, sizeof(p2p_query));
+    while(message.size()) {
+      size_t bytes_remaining = peer->write(message); 
+      message = message.substr(message.size() - bytes_remaining);
+    }
+  }
+}
+
+/**
+ * genOriginalP2pImageQuery()
+ * - Assemble packet for querying the p2p network for an image.
+ * @param iqry_packet : initial query packet sent by client
+ * @param image_net : data for this image-network node
+ * @return p2p_image_query_t : packet for querying the p2p image-network 
+ */
+const p2p_image_query_t genOriginalP2pImageQuery(
+  const iqry_t& iqry_packet,
+  ImageNetwork& image_net
+) {
+  // Packet header
+  p2p_image_query_t p2p_query;
+  p2p_query.header.vers = PM_VERS;
+  p2p_query.header.type = PM_SEARCH;
+
+  // Packet body
+  p2p_query.search_id = htons(image_net.genSearchId());
+
+  p2p_query.orig_peer.ipv4 = htonl(image_net.getImageClient().getRemoteIpv4());
+  p2p_query.orig_peer.port = htons(image_net.getImageClient().getRemotePort());
+
+  memcpy(p2p_query.file_name, iqry_packet.iq_name, NETIMG_MAXFNAME);
+
+  return p2p_query;
 }
 
 /**
@@ -430,7 +479,8 @@ void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
     );
 
     // Forward query to network because we couldn't find it locally
-    queryNetwork(iqry_packet, img_net);
+    const p2p_image_query_t p2p_query_packet = genOriginalP2pImageQuery(iqry_packet, img_net);
+    queryNetwork(p2p_query_packet, img_net);
   }
 }
 

@@ -3,8 +3,10 @@
 #include "Connection.h"
 #include "Service.h"
 #include "P2pTable.h"
+#include "packets.h"
 
 #include <assert.h>
+#include <deque>
 
 class ImageNetwork {
 
@@ -29,6 +31,16 @@ class ImageNetwork {
     * Connection to img client (netimg, not peer).
     */
    const Connection* imageClient_;
+
+   /**
+    * History of packet seen by this node.
+    */
+   std::deque<p2p_image_query_t> packetHistory_;
+
+   /**
+    * Current greatest search id assigned to p2p image-queries.
+    */
+   unsigned short currMaxSearchId_;
 
   public:
    /**
@@ -86,5 +98,28 @@ class ImageNetwork {
     * - Delete image client after sending back image. 
     */
    void invalidateImageClient();
+
+   /**
+    * addImageQuery()
+    * - Track this image query packet by adding to the "seen"
+    *   history for this node.
+    * - Simulates a curcular array with max-size MAX_PEERS
+    * @param query_packet : packet to track  
+    */
+   void addImageQuery(const p2p_image_query_t& query_packet);
+
+   /**
+    * hasSeenP2pImageQuery()
+    * @param query_packet : packet to check
+    * @return true iff 'query-packet' exists in 'packetHistory'
+    */
+   bool hasSeenP2pImageQuery(const p2p_image_query_t& query_packet) const;
+
+   /**
+    * genSearchId()
+    * - Return a uuid for p2p image-queries originating from this node.
+    * @return unsigned short : uuid for p2p image search packets.
+    */
+   unsigned short genSearchId();
 
 };

@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <deque>
 #include <assert.h>
 #include <sys/select.h>    // select(), FD_*
@@ -178,5 +179,12 @@ class P2pTable {
      * - Return ref to Connection linked to 'fd'
      */
     const Connection& fetchConnectionByFd(int fd) const;
+
+    /**
+     * fetchConnectedPeers()
+     * - Return immutable list of connected peers (not including pending).
+     * @return immutable list of peers  
+     */
+    const std::vector<const Connection*> fetchConnectedPeers() const;
 
 };
