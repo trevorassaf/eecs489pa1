@@ -63,4 +63,3 @@ struct message_header {
   char vers, type;
   uint16_t num_peers;
 };
-

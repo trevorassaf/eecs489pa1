@@ -16,6 +16,7 @@
 #include "SocketException.h"
 #include "P2pTable.h"
 #include "ImageNetwork.h"
+#include "ltga.h"
 
 #define PR_MAXPEERS 6
 #define PR_MAXFQDN 256
@@ -32,6 +33,8 @@
 #define PM_SEARCH 0x4
 
 #define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
+
+extern int imgdb_loadimg(const char* fname, LTGA* image, imsg_t* imsg, long* img_size);
 
 /**
  * Message type codes.
@@ -320,6 +323,33 @@ void rejectImageQuery(const Connection* connection) {
 }
 
 /**
+ * returnImageToClient()
+ * - Stream local image to client.
+ * @param image : image pixels
+ * @param image_packet : packet containing image data
+ * @param image_size : dimensions of image
+ * @param img_net : image network
+ */
+void returnImageToClient(
+  const LTGA& image,
+  const imsg_t& image_packet,
+  long image_size,
+  ImageNetwork& img_net
+) {
+   
+}
+
+/**
+ * queryNetwork()
+ * - Send out image query to the p2p network.
+ * @param iqry_packet : packet for image query 
+ * @param img_net : image network
+ */
+void queryNetwork(const iqry_t& iqry_packet, ImageNetwork& img_net) {
+
+}
+
+/**
  * handleImageQuery()
  * - Register image query and search for image. Begin search locally.
  *   If this node can't find the requested image, then the node queries
@@ -328,7 +358,37 @@ void rejectImageQuery(const Connection* connection) {
  * @param img_net : image network
  */
 void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
+  LTGA image;
+  imsg_t image_packet;
+  long image_size;
+  
+  if (imgdb_loadimg(
+        iqry_packet.iq_name,
+        &image,
+        &image_packet,
+        &image_size) == NETIMG_FOUND
+  ) {
+    // Notify user that local node has image
+    fprintf(
+        stderr,
+        "\tFound %s locally! Sending back to %s:%d...\n",
+        iqry_packet.iq_name,
+        img_net.getImageClient().getRemoteDomainName().c_str(),
+        img_net.getImageClient().getRemotePort());
 
+    // Send image back to client
+    returnImageToClient(image, image_packet, image_size, img_net); 
+  } else {
+    // Notify user of network query
+    fprintf(
+        stderr,
+        "\tCouldn't find %s locally -- querying network...\n",
+        iqry_packet.iq_name
+    );
+
+    // Forward query to network because we couldn't find it locally
+    queryNetwork(iqry_packet, img_net);
+  }
 }
 
 /**
