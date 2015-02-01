@@ -67,7 +67,6 @@ imgdb_loadimg(const char *fname, LTGA *image, imsg_t *imsg, long *img_size)
   image->LoadFromFile(fname);
 
   if (!image->IsLoaded()) {
-    cout << "\nCouldn't find " << fname << " locally " << endl;
     imsg->im_found = NETIMG_NFOUND;
   } else {
     imsg->im_found = NETIMG_FOUND;

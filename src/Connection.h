@@ -67,6 +67,7 @@ class Connection {
      * write()
      * - Write data to socket.
      * @param data : string of data to write to socket
+     * @return number of unsent chars 
      */
     size_t write(const std::string data) const;
 

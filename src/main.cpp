@@ -325,18 +325,59 @@ void rejectImageQuery(const Connection* connection) {
 /**
  * returnImageToClient()
  * - Stream local image to client.
- * @param image : image pixels
+ * @param image_pixels : image pixel array (null if no image)
  * @param image_packet : packet containing image data
  * @param image_size : dimensions of image
  * @param img_net : image network
  */
 void returnImageToClient(
-  const LTGA& image,
+  const char* image_pixels,
   const imsg_t& image_packet,
   long image_size,
   ImageNetwork& img_net
 ) {
-   
+  
+  const Connection& image_client = img_net.getImageClient();
+
+  // Send image packet 
+  size_t packet_size = sizeof(imsg_t);
+  std::string image_packet_str( (char *) &image_packet, packet_size);
+  size_t remaining_packet_bytes = packet_size;
+
+  while (remaining_packet_bytes) {
+    remaining_packet_bytes = image_client.write(image_packet_str); 
+    image_packet_str = image_packet_str.substr(image_packet_str.size() - remaining_packet_bytes);
+  }
+
+  // Send image (if found) in chunks of 'segsize'
+  if (image_pixels) {
+    size_t segsize = image_size / NETIMG_NUMSEG;
+    segsize = segsize < NETIMG_MSS ? NETIMG_MSS : segsize;
+    std::string image_pixels_str(image_pixels, image_size);
+    size_t image_bytes_remaining = image_size;
+    size_t segment_bytes_remaining = 0;
+
+    while (image_bytes_remaining) {
+      segsize = (segsize < image_bytes_remaining) ? segsize : image_bytes_remaining;
+      segment_bytes_remaining = image_client.write(image_pixels_str.substr(0, segsize));
+      image_pixels_str = image_pixels_str.substr(segsize - segment_bytes_remaining);
+      image_bytes_remaining -= segment_bytes_remaining;
+
+      // Notify user of segment send
+      fprintf(
+          stderr,
+          "\tSending image segment: size: %d, sent:%d\n",
+          segsize,
+          segsize - segment_bytes_remaining
+      );
+      
+      // Throttle segement sends
+      usleep(NETIMG_USLEEP);
+    }
+  }
+
+  // Close connection and prepare image-network to service next image query
+  img_net.invalidateImageClient();
 }
 
 /**
@@ -377,7 +418,7 @@ void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
         img_net.getImageClient().getRemotePort());
 
     // Send image back to client
-    returnImageToClient(image, image_packet, image_size, img_net); 
+    returnImageToClient( (char *) image.GetPixels(), image_packet, image_size, img_net); 
   } else {
     // Notify user of network query
     fprintf(
