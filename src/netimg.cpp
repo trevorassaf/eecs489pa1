@@ -43,10 +43,6 @@
 
 #include "packets.h"
 
-extern int sd;
-extern long img_size;
-extern char *image;
-
 extern void netimg_imginit();
 extern void netimg_glutinit(int *argc, char *argv[], void (*idlefunc)());
 
