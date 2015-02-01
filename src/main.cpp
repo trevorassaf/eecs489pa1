@@ -367,7 +367,7 @@ void returnImageToClient(
       fprintf(
           stderr,
           "\tSending image segment: size: %d, sent:%d\n",
-          segsize,
+          image_bytes_remaining,
           segsize - segment_bytes_remaining
       );
       
