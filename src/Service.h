@@ -49,6 +49,13 @@ class Service {
      */
     void initService();
 
+    /**
+     * initSocket()
+     * - Accept connection and spawn socket.
+     * @return fd for new socket
+     */
+    int initSocket() const;
+
   public:
     /**
      * ServerSocket()
@@ -90,6 +97,12 @@ class Service {
      * - Spawn connection for client.
      */
     const Connection accept() const;
+    
+    /**
+     * acceptNew()
+     * - Spawn connection for client with dynamic memory.
+     */
+    const Connection* acceptNew() const;
 
     /**
      * close()

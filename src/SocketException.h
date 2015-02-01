@@ -12,3 +12,13 @@ class SocketException : public std::runtime_error {
     */
    SocketException(const std::string& msg);
 };
+
+class BusyAddressSocketException : public SocketException {
+
+ public:
+   /**
+    * BusyAddressSocketException()
+    * - Ctor for BusyAddressSocketException.
+    */
+   BusyAddressSocketException(const std::string& msg);
+};

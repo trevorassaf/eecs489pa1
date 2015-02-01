@@ -6,6 +6,7 @@
 #include <arpa/inet.h>     // htons(), inet_ntoa()
 #include <iostream>
 #include <vector>
+#include <algorithm>
 
 #include "packets.h"
 #include "Service.h"
@@ -14,6 +15,7 @@
 #include "Connection.h"
 #include "SocketException.h"
 #include "P2pTable.h"
+#include "ImageNetwork.h"
 
 #define PR_MAXPEERS 6
 #define PR_MAXFQDN 256
@@ -26,7 +28,8 @@
 #define PR_QLEN   10 
 #define PR_LINGER 2
 
-#define PM_VERS 0x1
+#define PM_VERS   0x1
+#define PM_SEARCH 0x4
 
 #define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
 
@@ -254,15 +257,210 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
 }
 
 /**
- * handleJoinRequest()
+ * isImageQuery()
+ * - Returns true iff header indicates an image query.
+ * @param header : header of incoming packet  
+ */
+bool isImageQuery(const packet_header_t& header) {
+  return header.vers == NETIMG_VERS && header.type == NETIMG_QRY;
+}
+
+/**
+ * isImageTransfer()
+ * - Returns true iff header indicates an image transfer.
+ * @param header : header of incoming packet  
+ */
+bool isImageTransfer(const packet_header_t& header) {
+  return header.vers == PM_VERS && header.type == PM_SEARCH;
+}
+
+/**
+ * sendIqryPacket()
+ * - Send iqry_t to specified target.
+ * @param packet : imsg_t to send
+ * @param connection : target to which to send packet
+ */
+void sendIqryPacket(const iqry_t& packet, const Connection* connection) {
+  size_t bytes_remaining = sizeof(packet); 
+  std::string message( (char *) &packet, bytes_remaining);
+  while (bytes_remaining) {
+    bytes_remaining = connection->write(message);
+    message = message.substr(message.size() - bytes_remaining);
+  }
+}
+
+/**
+ * sendImsgPacket()
+ * - Send imsg_t to specified target.
+ * @param packet : imsg_t to send
+ * @param connection : target to which to send packet
+ */
+void sendImsgPacket(const imsg_t& packet, const Connection* connection) {
+  size_t bytes_remaining = sizeof(packet); 
+  std::string message( (char *) &packet, bytes_remaining);
+  while (bytes_remaining) {
+    bytes_remaining = connection->write(message);
+    message = message.substr(message.size() - bytes_remaining);
+  }
+}
+
+/**
+ * rejectImageQuery()
+ * - Send rejection message to querying client.
+ * @param connection : querying client  
+ */
+void rejectImageQuery(const Connection* connection) {
+  // Assemble imsg packet
+  imsg_t imsg_packet;
+  imsg_packet.header = {NETIMG_VERS, NETIMG_RPY};
+  imsg_packet.im_found = NETIMG_EBUSY;
+
+  // Send query rejection
+  sendImsgPacket(imsg_packet, connection);
+}
+
+/**
+ * handleImageQuery()
+ * - Register image query and search for image. Begin search locally.
+ *   If this node can't find the requested image, then the node queries
+ *   the p2p network for the image.
+ * @param connection : querying client
+ * @param img_net : image network
+ */
+void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
+
+}
+
+/**
+ * handleImageTransfer()
+ * - Receive image from transfering peer and forward result to querying client.
+ * @param connection : peer that's transfering image  
+ * @param img_net : image network
+ */
+void handleImageTransfer(const Connection* connection, ImageNetwork& img_net) {}
+
+/**
+ * handleImageTraffic()
+ * - Accept image requests from netimg clients and receive image
+ *   transfers from other peers.
+ * @param img_net : image network data 
+ */
+void handleImageTraffic(ImageNetwork& img_net) {
+
+  // Fetch image network assets
+  const Service& img_service = img_net.getImageService();
+  const Service& p2p_service = img_net.getP2pService();
+
+  // Accept connection (client or peer)
+  const Connection* connection = img_service.acceptNew();
+
+  // Report image connection
+  fprintf(
+      stderr,
+      "\nReceived image connection from %s:%d\n",
+      connection->getRemoteDomainName().c_str(),
+      connection->getRemotePort()
+  ); 
+
+  // Read packet header
+  packet_header_t header;
+  size_t packet_header_len = sizeof(header);
+  std::string message;
+
+  while (message.size() < packet_header_len) {
+    message += connection->read();
+  }
+
+  // Deserialize packet header
+  memcpy(&header, message.c_str(), packet_header_len);
+
+  // Determine packet header
+  if (isImageQuery(header)) {
+    // Handle image query
+    if (img_net.hasImageClient()) {
+      // Notify user of query rejection
+      fprintf(
+        stderr,
+        "\tRejecting image query because we're already servicing client %s:%d\n",
+        img_net.getImageClient().getRemoteDomainName().c_str(),
+        img_net.getImageClient().getRemotePort()
+      );
+      
+      rejectImageQuery(connection);
+
+      // Close connection
+      delete connection;
+    } else {
+      // Notify user of image query acceptance 
+      fprintf(
+        stderr,
+        "\tServicing image query.\n"
+      );
+
+      // Finish reading iqry_t
+      iqry_t iqry_packet;
+      size_t iqry_packet_len = sizeof(iqry_packet);
+      memset(&iqry_packet, 0, iqry_packet_len);
+      iqry_packet.header = header;
+      size_t packet_header_len = sizeof(header);
+      size_t packet_body_len = iqry_packet_len - packet_header_len;
+
+      while (message.size() < packet_body_len) {
+        message += connection->read();
+      }
+
+      // Deserialize message body
+      memcpy(&iqry_packet, message.c_str(), packet_body_len);
+      
+      // Report image query
+      fprintf(
+        stderr,
+        "\tSearching for image: %s\n",
+        iqry_packet.iq_name
+      );
+
+      img_net.setImageClient(connection);
+
+      handleImageQuery(iqry_packet, img_net); 
+    }
+  } else if (isImageTransfer(header)) {
+
+    // Notify user of image transfer
+    fprintf(
+      stderr,
+      "\tReceiving image transfer!\n"
+    );
+    
+    // Handle image transfer
+    handleImageTransfer(connection, img_net); 
+    
+    // Close connection
+    delete connection;
+
+  } else {
+    // Unrecognized packet, notify user
+    fprintf(
+        stderr,
+        "\nWARNING: unrecognized packet header: <vers: %c, type: %c>\n",
+        header.vers,
+        header.type
+    );
+
+    // Close connection
+    delete connection;
+  }
+}
+
+/**
+ * handlePeerTraffic()
  * - Accept peering request, if space available. Redirect, otherwise.
  * @param service : service listening for incoming connections
  * @param p2p_table : peer node registry
  */
-void handleJoinRequest(const Service& service, P2pTable& p2p_table) {
+void handlePeerTraffic(const Service& p2p_service, P2pTable& p2p_table) {
  
   // Accept connection
-  const Connection connection = service.accept();
+  const Connection connection = p2p_service.accept();
 
   if (p2p_table.isFull()) {
     // This node is saturated, redurect client peer
@@ -305,7 +503,6 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
 
   // Deserialize message and transform fields to host-byte-order
   memcpy(&header, message.c_str(), message_header_len);
-  header.num_peers = header.num_peers;
 
   // Read auto-join nodes from peer
   if (header.num_peers) {
@@ -324,13 +521,6 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
     const char* message_cstr = message.c_str();
     std::vector<peer_addr> peers_to_join;
     peers_to_join.reserve(header.num_peers);
-   
-    // Bind outgoing connections to the same port that this node
-    // is lisetening on
-    ServerBuilder server_builder;
-    server_builder
-      .setLocalPort(service_port)
-      .enableAddressReuse();
 
     fprintf(stderr, "\twhich is peered with %i peers:\n", header.num_peers);
 
@@ -409,6 +599,13 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
         "Local peer table has room -- attempting to connect to more peers.\n\n"
       );
     }
+   
+    // Bind outgoing connections to the same port that this node
+    // is lisetening on
+    ServerBuilder server_builder;
+    server_builder
+      .setLocalPort(service_port)
+      .enableAddressReuse();
 
     // Attempt to saturate peer table with recommended peers
     auto remote_iter = peers_to_join.begin();
@@ -416,25 +613,32 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
     while (!p2p_table.isFull() && remote_iter != peers_to_join.end()) {
       // Attempt connection if not in p2p-table
       if (!p2p_table.hasRemote(remote_iter->ipv4, remote_iter->port)) {
-        
-        // Connect to peer
-        Connection new_peer = server_builder
-            .setRemoteIpv4Address(remote_iter->ipv4)
-            .setRemotePort(remote_iter->port)
-            .build();
-        
-        // Put connection in p2p table in pending state
-        p2p_table.registerPendingPeer(new_peer);
+       
+        try {
+          // Connect to peer
+          Connection new_peer = server_builder
+              .setRemoteIpv4Address(remote_iter->ipv4)
+              .setRemotePort(remote_iter->port)
+              .build();
+          
+          // Put connection in p2p table in pending state
+          p2p_table.registerPendingPeer(new_peer);
 
-        // Report peering attempt 
-        fprintf(
-            stderr,
-            "Connecting to peer %s:%d (referenced by %s:%d)\n",
-            new_peer.getRemoteDomainName().c_str(),
-            new_peer.getRemotePort(),
-            connection.getRemoteDomainName().c_str(),
-            connection.getRemotePort()
-        );
+          // Report peering attempt 
+          fprintf(
+              stderr,
+              "Connecting to peer %s:%d (referenced by %s:%d)\n",
+              new_peer.getRemoteDomainName().c_str(),
+              new_peer.getRemotePort(),
+              connection.getRemoteDomainName().c_str(),
+              connection.getRemotePort()
+          );
+        } catch (const BusyAddressSocketException& e) {
+          fprintf(
+              stderr,
+              "WARNING: peers attempted to connect simulatenously (case 4). Killing local connection."
+          ); 
+        }
       }
       ++remote_iter;
     }
@@ -442,21 +646,30 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
 }
 
 /**
- * runP2pService()
+ * runImageNetwork()
  * - Activate p2p service.
- * @param service : service listening for incoming connections
- * @param p2p_table : peer node registry
+ * @param ImageNetwork : image network
  */
-void runP2pService(const Service& service, P2pTable& p2p_table) {
-  
+void runImageNetwork(
+  ImageNetwork& img_net
+) {
+
+  // Fetch network elements
+  const Service& img_service = img_net.getImageService();
+  const Service& p2p_service = img_net.getP2pService(); 
+  P2pTable& p2p_table = img_net.getP2pTable();
+
   // Main program event-loop 
   do {
-    // Compose fd-set and find max-fd
+    // Assemble fd-set and find max-fd
     fd_set rset;
     FD_ZERO(&rset);
-    FD_SET(service.getFd(), &rset);
     
-    int max_fd = service.getFd();
+    // Register p2p and img services
+    FD_SET(p2p_service.getFd(), &rset);
+    FD_SET(img_service.getFd(), &rset);
+    int max_fd = std::max(p2p_service.getFd(), img_service.getFd());
+    
     const std::unordered_set<int> peering_fds = p2p_table.getPeeringFdSet(); 
 
     for (int fd : peering_fds) {
@@ -469,20 +682,25 @@ void runP2pService(const Service& service, P2pTable& p2p_table) {
       FD_SET(fd, &rset);
     }
 
-    // Wait on peer nods for incoming traffic
+    // Wait on p2p/img services and peer nodes for incoming traffic
     if (select(max_fd + 1, &rset, NULL, NULL, NULL) == -1) {
-      throw SocketException("Failed while waiting on peer nodes");
+      throw SocketException("Failed while selecting sockets with traffic");
     }
 
     // Handle incoming connection
-    if (FD_ISSET(service.getFd(), &rset)) {
-      handleJoinRequest(service, p2p_table);
+    if (FD_ISSET(p2p_service.getFd(), &rset)) {
+      handlePeerTraffic(p2p_service, p2p_table);
+    }
+    
+    // Handle incoming connection
+    if (FD_ISSET(img_service.getFd(), &rset)) {
+      handleImageTraffic(img_net);
     }
 
     // Handle messages from peer nodes
     for (int fd : peering_fds) {
       if (FD_ISSET(fd, &rset)) {
-        handleIncomingMessage(service.getPort(), fd, p2p_table);
+        handleIncomingMessage(p2p_service.getPort(), fd, p2p_table);
       } 
     }
 
@@ -532,25 +750,48 @@ int main(int argc, char** argv) {
   }
 
   // Allow other peers to connect 
-  ServiceBuilder service_builder;
-  Service service = service_builder
+  ServiceBuilder p2p_service_builder;
+  Service p2p_service = p2p_service_builder
       .setPort(port)
       .setBacklog(PR_QLEN)
       .enableAddressReuse()
       .enableLinger(PR_LINGER)
       .build();
 
-  // Report service info
+  // Report p2p service info
   fprintf(
       stderr,
       "\nThis peer address is %s:%d\n",
-      service.getDomainName().c_str(),
-      service.getPort()
+      p2p_service.getDomainName().c_str(),
+      p2p_service.getPort()
   );
 
-  runP2pService(service, peer_table);
+  // Allow clients to query images and for peers
+  // to deliver images
+  ServiceBuilder img_service_builder;
+  Service img_service =  img_service_builder
+    .setBacklog(PR_QLEN)
+    .enableAddressReuse()
+    .enableLinger(PR_LINGER)
+    .build();
+  
+  // Report image service info
+  fprintf(
+      stderr,
+      "\nThis image server address is %s:%d\n",
+      img_service.getDomainName().c_str(),
+      img_service.getPort()
+  );
 
-  service.close();
+  ImageNetwork img_net(
+      img_service,
+      p2p_service,
+      peer_table);
+
+  runImageNetwork(img_net);
+
+  img_service.close();
+  p2p_service.close();
 
   return 0;
 }

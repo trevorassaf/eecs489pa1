@@ -110,6 +110,10 @@ Connection ServerBuilder::build() const {
 
   // Connect to peer server
   if (::connect(sd, (struct sockaddr *) &server, size_server) == -1) {
+    if (errno == EADDRNOTAVAIL) {
+      throw BusyAddressSocketException("Address is in use, already connected.");
+    }
+
     throw SocketException("Failed to connect to peer server: " + remoteDomainName_);
   }
 

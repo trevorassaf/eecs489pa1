@@ -46,6 +46,12 @@ class Connection {
     explicit Connection(int file_descriptor); 
 
     /**
+     * ~Connection()
+     * - Dtor for Connection. Closes socket.
+     */
+    ~Connection();
+
+    /**
      * getFd()
      * - Return fild descriptor for socket.
      */
@@ -101,12 +107,6 @@ class Connection {
     const std::string& getRemoteDomainName() const;
 
     /**
-     * close()
-     * - Close socket.
-     */
-    void close() const;
-
-    /**
      * operator==
      * - Return true iff the local/remote name/ports are equivalent.
      */
@@ -117,5 +117,11 @@ class Connection {
      * - Return true iff operator== returns false.
      */
     bool operator!=(const Connection& other);
+    
+    /**
+     * close()
+     * - Close socket.
+     */
+    void close() const;
 
 };

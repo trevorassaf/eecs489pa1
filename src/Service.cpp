@@ -40,19 +40,7 @@ void Service::initService() {
   domainName_ = std::string(hostname_buff);
 }
 
-int Service::getFd() const {
-  return fileDescriptor_;
-}
-
-u_short Service::getPort() const {
-  return port_;
-}
-
-const std::string& Service::getDomainName() const {
-  return domainName_;
-}
-
-const Connection Service::accept() const {
+int Service::initSocket() const {
   // Accept incoming connection
   struct sockaddr_in peer;
   socklen_t len = sizeof(sockaddr_in);
@@ -76,7 +64,29 @@ const Connection Service::accept() const {
     }
   }
 
-  return Connection(sd);
+  return sd;
+}
+
+int Service::getFd() const {
+  return fileDescriptor_;
+}
+
+u_short Service::getPort() const {
+  return port_;
+}
+
+const std::string& Service::getDomainName() const {
+  return domainName_;
+}
+
+const Connection Service::accept() const {
+  int fd = initSocket();
+  return Connection(fd);
+}
+
+const Connection* Service::acceptNew() const {
+  int fd = initSocket();
+  return new Connection(fd);
 }
 
 void Service::close() const {

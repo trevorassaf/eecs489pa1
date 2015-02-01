@@ -10,8 +10,10 @@
 #include <sys/types.h>     // u_short
 #include <sys/socket.h>    // socket API, setsockopt(), getsockname()
 #include <sys/select.h>    // select(), FD_*
+#include <errno.h>
 
 #include "Connection.h"
+#include "SocketException.h"
 
 class ServerBuilder {
 
