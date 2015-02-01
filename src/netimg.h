@@ -32,11 +32,5 @@
 /* END SOLUTION */
 
 
-extern int sd;
-extern long img_size;
-extern char *image;
-
-extern void netimg_glutinit(int *argc, char *argv[], void (*idlefunc)());
-extern void netimg_imginit();
 
 #endif /* __NETIMG_H__ */

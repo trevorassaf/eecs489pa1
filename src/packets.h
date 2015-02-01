@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sys/types.h>
+#include "ltga.h"
 
 #define NETIMG_WIDTH  640
 #define NETIMG_HEIGHT 480
@@ -31,7 +32,7 @@
  * Header for all packets.
  */
 struct packet_header_t {
-  char vers, type;
+  unsigned char vers, type;
 };
 
 struct iqry_t {
@@ -41,13 +42,13 @@ struct iqry_t {
 
 struct imsg_t {
   packet_header_t header;
-  char im_found;
-  char im_depth;    // in bytes, not bits as returned by LTGA.GetPixelDepth()
-  char im_format;
-  char im_width;
-  char im_height; 
-  char im_adepth;   // not used
-  char im_rle;      // not used
+  unsigned char im_found;
+  unsigned char im_depth;    // in bytes, not bits as returned by LTGA.GetPixelDepth()
+  unsigned short im_format;
+  unsigned short im_width;
+  unsigned short im_height; 
+  unsigned char im_adepth;   // not used
+  unsigned char im_rle;      // not used
 };
 
 /**
@@ -63,3 +64,11 @@ struct message_header {
   char vers, type;
   uint16_t num_peers;
 };
+
+extern int sd;
+extern long img_size;
+extern char *image;
+
+extern int imgdb_loadimg(const char* fname, LTGA* image, imsg_t* imsg, long* img_size);
+extern void netimg_glutinit(int *argc, char *argv[], void (*idlefunc)());
+extern void netimg_imginit();

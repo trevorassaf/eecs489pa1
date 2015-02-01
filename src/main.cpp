@@ -34,7 +34,6 @@
 
 #define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
 
-extern int imgdb_loadimg(const char* fname, LTGA* image, imsg_t* imsg, long* img_size);
 
 /**
  * Message type codes.
@@ -354,22 +353,24 @@ void returnImageToClient(
     size_t segsize = image_size / NETIMG_NUMSEG;
     segsize = segsize < NETIMG_MSS ? NETIMG_MSS : segsize;
     std::string image_pixels_str(image_pixels, image_size);
-    size_t image_bytes_remaining = image_size;
     size_t segment_bytes_remaining = 0;
 
-    while (image_bytes_remaining) {
-      segsize = (segsize < image_bytes_remaining) ? segsize : image_bytes_remaining;
+    while (image_pixels_str.size()) {
+      segsize = std::min(segsize, image_pixels_str.size());
       segment_bytes_remaining = image_client.write(image_pixels_str.substr(0, segsize));
-      image_pixels_str = image_pixels_str.substr(segsize - segment_bytes_remaining);
-      image_bytes_remaining -= segment_bytes_remaining;
+      
+      size_t segment_bytes_sent = segsize - segment_bytes_remaining;
 
       // Notify user of segment send
       fprintf(
           stderr,
           "\tSending image segment: size: %d, sent:%d\n",
-          image_bytes_remaining,
-          segsize - segment_bytes_remaining
+          (int) image_pixels_str.size(),
+          (int) (segment_bytes_sent)
       );
+      
+      // Consume sent bytes
+      image_pixels_str = image_pixels_str.substr(segment_bytes_sent);
       
       // Throttle segement sends
       usleep(NETIMG_USLEEP);
@@ -401,6 +402,7 @@ void queryNetwork(const iqry_t& iqry_packet, ImageNetwork& img_net) {
 void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
   LTGA image;
   imsg_t image_packet;
+  memset(&image_packet, 0, sizeof(image_packet));
   long image_size;
   
   if (imgdb_loadimg(
