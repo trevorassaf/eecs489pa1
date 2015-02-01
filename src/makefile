@@ -21,10 +21,15 @@ P2PDB_HEADERS = ServiceBuilder.h \
 P2PDB_EXE = p2pdb
 NETIMG_OBJS = netimg.o netimglut.o
 NETIMG_HEADERS = packets.h
-NETIMG_LIBS = -lGL -lGLU -lglut
 NETIMG_EXE = netimg
 CXXFLAGS = -Wall -Wno-deprecated -std=c++11
 LFLAGS = $(CXXFLAGS) 
+OS := $(shell uname)
+ifeq ($(OS), Darwin)
+  NETIMG_LIBS = -framework OpenGL -framework GLUT -lc
+else
+  NETIMG_LIBS = -lGL -lGLU -lglut
+endif
 
 all: $(P2PDB_EXE) $(NETIMG_EXE)
 
