@@ -48,15 +48,20 @@
 #define REJECTED_MSG  "rejected"
 #define AVAILABLE_MSG "available"
 
-#define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
+#define net_assert(err, errmsg) { if (!(err)) { perror(errmsg); assert((err)); } }
 
 /**
- * Message type codes.
+ * Message type codes for peering traffic.
  */
-enum MessageType {
+enum PmMessageType {
   WELCOME  = 0x1,
   REDIRECT = 0x2,
   SEARCH = 0x4
+};
+
+enum NetimgMessageType {
+  QUERY = 0x1,
+  REPLY = 0x2
 };
 
 /**

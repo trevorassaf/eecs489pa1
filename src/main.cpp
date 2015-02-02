@@ -120,7 +120,7 @@ Connection connectToFirstPeer(const fqdn& remote_fqdn) {
 void autoJoin(
   const Connection connection,
   const P2pTable& p2p_table,
-  MessageType message_type) 
+  PmMessageType message_type) 
 {
   // Compose redirect message
   peering_response_header_t join_header;
@@ -235,7 +235,7 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
  * @param header : header of incoming packet  
  */
 bool isClientImageQuery(const packet_header_t& header) {
-  return header.vers == NETIMG_VERS && header.type == NETIMG_QRY;
+  return header.vers == NETIMG_VERS && header.type == QUERY;
 }
 
 /**
@@ -244,7 +244,7 @@ bool isClientImageQuery(const packet_header_t& header) {
  * @param header : header of incoming packet  
  */
 bool isPeerImageTransfer(const packet_header_t& header) {
-  return header.vers == PM_VERS && header.type == PM_SEARCH;
+  return header.vers == NETIMG_VERS && header.type == REPLY;
 }
 
 /**
@@ -255,8 +255,8 @@ bool isPeerImageTransfer(const packet_header_t& header) {
 void rejectImageQuery(const Connection* connection) {
   // Assemble imsg packet
   imsg_t imsg_packet;
-  imsg_packet.header = {NETIMG_VERS, NETIMG_RPY};
-  imsg_packet.im_found = htons(NETIMG_EBUSY);
+  imsg_packet.header = {NETIMG_VERS, REPLY};
+  imsg_packet.im_found = NETIMG_EBUSY;
 
   // Send query rejection
   std::string message( (char *) &imsg_packet, sizeof(imsg_packet));
@@ -290,8 +290,8 @@ void timeoutImageQuery(ImageNetwork& img_net) {
     
   // Assemble imsg packet
   imsg_t imsg_packet;
-  imsg_packet.header = {NETIMG_VERS, NETIMG_RPY};
-  imsg_packet.im_found = htons(NETIMG_NFOUND);
+  imsg_packet.header = {NETIMG_VERS, REPLY};
+  imsg_packet.im_found = NETIMG_NFOUND;
 
   // Send query timeout 
   std::string message( (char *) &imsg_packet, sizeof(imsg_packet));
@@ -468,7 +468,7 @@ void queryNetworkForImage(
       // Report skipping 'peer-client'
       fprintf(
           stderr,
-          "\tNot forwarding query to %s:%d because it just sent the image to us...",
+          "\tNot forwarding query to %s:%d because it sent us the query...",
           peer->getRemoteDomainName().c_str(),
           peer->getRemotePort()
       );
@@ -566,7 +566,7 @@ void processImageQuery(
 
       // Send image back to client
       image_packet.header.vers = NETIMG_VERS;
-      image_packet.header.type = NETIMG_RPY;
+      image_packet.header.type = REPLY;
       returnImageToClient( (char *) image.GetPixels(), image_packet, image_size, img_net); 
       
       return; 
@@ -580,8 +580,8 @@ void processImageQuery(
     );
 
     // Forward image to originating peer (which then streams down to client)
-    image_packet.header.vers = PM_VERS;
-    image_packet.header.type = PM_SEARCH;
+    image_packet.header.vers = NETIMG_VERS;
+    image_packet.header.type = REPLY;
 
     returnImageToOriginatingPeer( (char *) image.GetPixels(), image_packet, image_size, image_query, img_net); 
     
@@ -612,8 +612,14 @@ void handleImageTransferTraffic(
   ImageNetwork& img_net
 ) {
 
-  // Fail because we're not an 'originating peer'
-  assert(img_net.hasImageClient());
+  // Recieve file transfer
+  bool process_file_transfer = true;
+
+  // We've already serviced this query!
+  if (!img_net.hasImageClient()) {
+    process_file_transfer = false;
+  }
+
 
   // Read image transfer header bytes from wire
   imsg_t imsg_packet;
@@ -629,7 +635,7 @@ void handleImageTransferTraffic(
 
   // Update packet header information for image client
   imsg_packet.header.vers = NETIMG_VERS;
-  imsg_packet.header.type = NETIMG_RPY;
+  imsg_packet.header.type = REPLY;
 
   // Report image transfer
   fprintf(
@@ -663,10 +669,23 @@ void handleImageTransferTraffic(
     exit(1);
   } 
 
+  // Don't transfer to client if we've already serviced this query!
+  if (!process_file_transfer) {
+    // Report file-transfer interrupted
+    fprintf( stderr, "\tReceived image at originating peer (%zi bytes).  \n\tNot transfering to image client because we've already serviced this query...\n\n",
+        image_pixels_len
+    );
+   
+    return;
+  }
+
+  // Fail due to invalid image client
+  assert(img_net.hasImageClient());
+
   // Report image transfer
   fprintf(
       stderr,
-      "\tReceived image at originating client (%zi bytes). Now transfering to image client, %s:%d\n",
+      "\tReceived image at originating peer (%zi bytes). Now transfering to image client, %s:%d\n",
       image_pixels_len,
       img_net.getImageClient().getRemoteDomainName().c_str(),
       img_net.getImageClient().getRemotePort()
@@ -715,7 +734,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
       // Notify user of query rejection
       fprintf(
         stderr,
-        "\tRejecting image query because we're already servicing client %s:%d\n",
+        "\tBusy! Rejecting image query because we're already servicing client %s:%d\n",
         img_net.getImageClient().getRemoteDomainName().c_str(),
         img_net.getImageClient().getRemotePort()
       );
@@ -791,7 +810,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
     // Unrecognized packet, notify user
     fprintf(
         stderr,
-        "\nWARNING: unrecognized packet header: <vers: %hu, type: %hu>\n",
+        "\nWARNING: unrecognized packet header: <vers: %hhu, type: %hhu>\n",
         header.vers,
         header.type
     );
@@ -972,14 +991,15 @@ void handleRecommendedPeerTraffic(
   while (!p2p_table.isFull() && remote_iter != recommended_peers.end()) {
     // Skip peer if we're already connected/peering or 
     // we've been rejected by it recently
-    if (!p2p_table.hasRemote(remote_iter->ipv4, remote_iter->port)) {
+    if (!p2p_table.hasRemote(ntohl(remote_iter->ipv4), ntohs(remote_iter->port))) {
       try {
         // Connect to peer
         Connection new_peer = server_builder
             .setRemoteIpv4Address(ntohl(remote_iter->ipv4))
             .setRemotePort(ntohs(remote_iter->port))
             .build();
-        
+       
+        fprintf(stderr, "Register pending peer 1\n");
         // Put connection in p2p table in 'pending' state
         p2p_table.registerPendingPeer(new_peer);
 
@@ -997,10 +1017,10 @@ void handleRecommendedPeerTraffic(
         // first => erase this socket
         fprintf(
             stderr,
-            "WARNING: peers attempted to connect simulatenously (case 4). Killing local connection."
+            "WARNING: peers attempted to connect simulatenously (case 4). Killing local connection to %u:%hu\n",
+            ntohl(remote_iter->ipv4),
+            ntohs(remote_iter->port)
         ); 
-
-// TODO find a way to close this socket... (probably need dynamic memory...)
       }
     }
     ++remote_iter;
@@ -1143,6 +1163,11 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
       handleRecommendedPeerTraffic(resp_header, message, connection, img_net);
     }
 
+    // Close connection to peer that redirected us 
+    if (packet_header.type == REDIRECT) {
+      connection.close();
+    }
+
   } else if (packet_header.type == SEARCH) {
     // Report p2p image query traffic
     fprintf(stderr, "\tImage query received!\n");
@@ -1174,7 +1199,7 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
     // Report p2p image query specifics
     fprintf(
         stderr,
-        "\tImage query: peer(orig-ipv4: %u, orig-port: %u) is querying for %s with search-id: %u\n",
+        "\tImage query: peer(ipv4: %u, image-port: %u) is querying for %s with search-id: %u\n",
         ntohl(image_query.orig_peer.ipv4),
         ntohs(image_query.orig_peer.port),
         image_query.file_name,
@@ -1308,6 +1333,7 @@ int main(int argc, char** argv) {
     );
 
     // Add user-specified peer to table (first one)
+    fprintf(stderr, "Register pending peer 2\n");
     peer_table.registerPendingPeer(server);
   }
 

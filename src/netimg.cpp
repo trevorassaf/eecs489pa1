@@ -196,7 +196,7 @@ netimg_sendqry(char *imagename, char vers)
  * wrong size.  Upon return, allthe integer fields of imsg are in host
  * byte order.
  */
-int
+unsigned char
 netimg_recvimsg()
 {
   double img_dsize;
@@ -236,14 +236,12 @@ netimg_recvimsg()
     imsg.im_width = ntohs(imsg.im_width);
     imsg.im_height = ntohs(imsg.im_height);
 
-  if (imsg.im_found) {
+  if (imsg.im_found == NETIMG_FOUND) {
     img_dsize = (double) (imsg.im_height*imsg.im_width*(u_short)imsg.im_depth);
     img_size = (long) img_dsize;                 // global
-
-    return(NETIMG_FOUND);
-  } else {
-    return(NETIMG_NFOUND);
-  }
+  } 
+ 
+  return imsg.im_found; 
 }
 
 /* Callback functions for GLUT */
@@ -307,7 +305,7 @@ netimg_recvimg(void)
 int
 main(int argc, char *argv[])
 {
-  int err;
+  unsigned char err;
   char *sname, *imagename;
   u_short port;
   char vers;
@@ -326,13 +324,20 @@ main(int argc, char *argv[])
   if (netimg_sendqry(imagename, vers)) {
     err = netimg_recvimsg();  // Task 1
 
-    if (err == NETIMG_FOUND) { // if image received ok
+    if (err == (unsigned char) NETIMG_FOUND) { // if image received ok
       netimg_glutinit(&argc, argv, netimg_recvimg);
       netimg_imginit();
       
       glutMainLoop(); /* start the GLUT main loop */
-    } else if (err == NETIMG_NFOUND) {
+    } else if (err == (unsigned char) NETIMG_NFOUND) {
       fprintf(stderr, "%s: %s image not found.\n", argv[0], imagename);
+    } else if (err == (unsigned char) NETIMG_EBUSY) {
+      fprintf(
+          stderr, 
+          "Peer busy! Please wait for %s:%d to finish servicing its query.\n",
+          sname,
+          port
+      );
     } else {
       fprintf(stderr, "%s: image receive error %d.\n", argv[0], err);
     }
