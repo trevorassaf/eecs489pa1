@@ -105,13 +105,13 @@ class Connection {
      * operator==
      * - Return true iff the local/remote name/ports are equivalent.
      */
-    bool operator==(const Connection& other);
+    bool operator==(const Connection& other) const;
 
     /**
      * operator!=
      * - Return true iff operator== returns false.
      */
-    bool operator!=(const Connection& other);
+    bool operator!=(const Connection& other) const;
     
     /**
      * close()

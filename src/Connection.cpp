@@ -94,7 +94,7 @@ void Connection::close() const {
   }
 }
 
-bool Connection::operator==(const Connection& other) {
+bool Connection::operator==(const Connection& other) const {
   return remotePort_ == other.remotePort_ &&
     localPort_ == other.localPort_ &&
     remoteDomainName_ == other.remoteDomainName_ &&
@@ -103,7 +103,7 @@ bool Connection::operator==(const Connection& other) {
     remoteIpv4_ == other.remoteIpv4_;
 }
 
-bool Connection::operator!=(const Connection& other) {
+bool Connection::operator!=(const Connection& other) const {
   return !(*this == other); 
 }
 

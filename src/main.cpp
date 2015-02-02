@@ -220,7 +220,7 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
   // Notify user of redirected peer
   fprintf(
       stderr,
-      "Peer table full: %s:%d redirected\n",
+      "\nPeer table full: %s:%d redirected\n",
       connection.getRemoteDomainName().c_str(),
       connection.getRemotePort()
   ); 
@@ -318,9 +318,9 @@ void returnImageToClient(
       // Notify user of segment send
       fprintf(
           stderr,
-          "\tSending image segment: size: %d, sent:%d\n",
-          (int) image_pixels_str.size(),
-          (int) (segment_bytes_sent)
+          "\tSending image segment: size: %zi, sent:%zi\n",
+          image_pixels_str.size(),
+          segment_bytes_sent
       );
       
       // Consume sent bytes
@@ -336,13 +336,19 @@ void returnImageToClient(
 }
 
 /**
- * queryNetwork()
+ * queryNetworkForImage()
  * - Initiate or forward image query to the p2p network. Registers packet as 'seen.'
  *   Doesn't send packet if this node has seen this packet previously 
- * @param iqry_packet : packet for image query (network-byte-order fields)
- * @param img_net : image network
+ * @param p2p_query : packet for image query (network-byte-order fields)
+ * @param querying_peer : connection to client sending us this query
+ *    (null, if we're the originating client)
+ * @param img_net : image network data
  */
-void queryNetwork(const p2p_image_query_t& p2p_query, ImageNetwork& img_net) {
+void queryNetworkForImage(
+  const p2p_image_query_t& p2p_query,
+  const Connection* querying_peer,
+  ImageNetwork& img_net
+) {
 
   // Drop this packet if we've seen it already
   if (img_net.hasSeenP2pImageQuery(p2p_query)) {
@@ -364,14 +370,28 @@ void queryNetwork(const p2p_image_query_t& p2p_query, ImageNetwork& img_net) {
 
   // Forward query to connected peers
   const std::vector<const Connection*> connected_peers = img_net.getP2pTable().fetchConnectedPeers();
-  std::cout << "\n\npeer-table size: " << img_net.getP2pTable().getNumPeers() << 
-      ", # connected peers: " << connected_peers.size() << std::endl;
 
   for (const Connection* peer : connected_peers) {
+    // Fail because 'peer' should never be null
+    assert(peer);
+
+    // Skip this peer if it sent us the query 
+    if (querying_peer && *querying_peer == *peer) {
+      // Report skipping 'peer-client'
+      fprintf(
+          stderr,
+          "\tNot forwarding query to %s:%d because it just sent the image to us...",
+          peer->getRemoteDomainName().c_str(),
+          peer->getRemotePort()
+      );
+
+      continue;
+    }
+
     // Report forwarded image
     fprintf(
         stderr,
-        "\tForwarding p2p image query to %s:%d\n",
+        "\tForwarding image query to %s:%d\n",
         peer->getRemoteDomainName().c_str(),
         peer->getRemotePort()
     );
@@ -413,47 +433,81 @@ const p2p_image_query_t genOriginalP2pImageQuery(
 }
 
 /**
- * handleClientImageQuery()
+ * processImageQuery()
  * - Register image query and search for image. Begin search locally.
  *   If this node can't find the requested image, then the node queries
  *   the p2p network for the image.
- * @param connection : querying client
+ * @param image_query : image query packet 
+ * @param querying_peer : querying peer node 
  * @param img_net : image network
  */
-void handleClientImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
+void processImageQuery(
+  const p2p_image_query_t& image_query,
+  const Connection* querying_peer,
+  ImageNetwork& img_net
+) {
+  
   LTGA image;
   imsg_t image_packet;
   memset(&image_packet, 0, sizeof(image_packet));
   long image_size;
-  
+ 
+  // Search for image locally
   if (imgdb_loadimg(
-        iqry_packet.iq_name,
+        image_query.file_name,
         &image,
         &image_packet,
         &image_size) == NETIMG_FOUND
   ) {
-    // Notify user that local node has image
-    fprintf(
-        stderr,
-        "\tFound %s locally! Sending back to %s:%d...\n",
-        iqry_packet.iq_name,
-        img_net.getImageClient().getRemoteDomainName().c_str(),
-        img_net.getImageClient().getRemotePort());
 
-    // Send image back to client
-    returnImageToClient( (char *) image.GetPixels(), image_packet, image_size, img_net); 
-  } else {
-    // Notify user of network query
+    // Check if we're the 'originating peer'
+    if (img_net.hasImageClient() &&
+        img_net.getImageClient().getLocalIpv4() == image_query.orig_peer.ipv4 &&
+        img_net.getImageClient().getLocalPort() == image_query.orig_peer.port)
+    {
+      // Fail because we should've found the image without 
+      // having to go to the network
+      assert(!querying_peer);
+
+      // Notify user that local node (originating peer) has image
+      fprintf(
+          stderr,
+          "\tFound %s locally on originating peer! Sending back to netimg client, %s:%d\n",
+          image_query.file_name,
+          img_net.getImageClient().getRemoteDomainName().c_str(),
+          img_net.getImageClient().getRemotePort()
+      );
+
+      // Send image back to client
+      returnImageToClient( (char *) image.GetPixels(), image_packet, image_size, img_net); 
+      
+      return; 
+    }
+    
+    // Notify user that local node (non-originating peer) has image
     fprintf(
         stderr,
-        "\tCouldn't find %s locally -- querying network...\n",
-        iqry_packet.iq_name
+        "\tFound %s locally on non-originating peer! Sending back to originating peer, %s:%d...\n",
+        image_query.file_name,
+        img_net.getImageClient().getRemoteDomainName().c_str(),
+        img_net.getImageClient().getRemotePort()
     );
 
-    // Forward query to network because we couldn't find it locally
-    const p2p_image_query_t p2p_query_packet = genOriginalP2pImageQuery(iqry_packet, img_net);
-    queryNetwork(p2p_query_packet, img_net);
+    // Send image back to client
+    returnImageToOriginatingPeer( (char *) image.GetPixels(), image_packet, image_size, img_net); 
+    
+    return;
   }
+  
+  // Report that we're going to broadcast the image query 
+  fprintf(
+      stderr,
+      "\tCouldn't find %s locally -- querying network...\n",
+     image_query.file_name 
+  );
+
+  // Broadcast image query to p2p network
+  queryNetworkForImage(image_query, querying_peer, img_net);
 }
 
 /**
@@ -466,17 +520,27 @@ void handleImageTransfer(const Connection* connection, ImageNetwork& img_net) {}
 
 /**
  * handleP2pImageQuery()
- * - Process p2p traffic on the image-network. 2 cases:
- * @param header : header for p2p image packet
- * @param peer_client : connection to the querying peer 
+ * - Received image query from peer.
+ *   1. Drop packet if we've seen it before.
+ *   2. Check to see if we have the image. If so, stream to originating peer.
+ *   3. Broadcast query to all peers except 'peer-client'
+ * @param image_query : image query packet 
+ * @param peer_client : connection to the peer sending us the image query
  * @param img_net : image network data
  */
 void handleP2pImageQuery(
-  const p2p_image_query_t& header,
+  const p2p_image_query_t& image_query,
   const Connection& peer_client,
   ImageNetwork& img_net
 ) {
-    
+ 
+  if (img_net.hasSeenP2pImageQuery(image_query)) {
+    // Notify user that we've broadcasted this packet already...  
+    fprintf(stderr, "\tDropping query because we've seen it already!\n");
+    return; /* exit early because we've already seen this query */
+  }
+
+  
 }
 
 /**
@@ -528,14 +592,15 @@ void handleImageTraffic(ImageNetwork& img_net) {
       // Close connection
       connection->close();
       delete connection;
+
     } else {
       // Notify user of image query acceptance 
       fprintf(
         stderr,
-        "\tServicing image query.\n"
+        "\tServicing image query!\n"
       );
 
-      // Finish reading iqry_t
+      // Finish reading iqry_t packet
       iqry_t iqry_packet;
       size_t iqry_packet_len = sizeof(iqry_packet);
       memset(&iqry_packet, 0, iqry_packet_len);
@@ -559,8 +624,14 @@ void handleImageTraffic(ImageNetwork& img_net) {
 
       img_net.setImageClient(connection);
 
-      handleClientImageQuery(iqry_packet, img_net); 
+      // Assemble image query packet
+      const p2p_image_query_t p2p_query_packet = 
+          genOriginalP2pImageQuery(iqry_packet, img_net);
+      
+      // Handle image query
+      processImageQuery(p2p_query_packet, connection, img_net); 
     }
+
   } else if (isImageTransfer(header)) {
 
     // Notify user of image transfer
@@ -931,32 +1002,31 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
 
   } else if (packet_header.type == SEARCH) {
     // Report p2p image query traffic
-    fprintf(stderr, "\tImage query received!\n");
+    fprintf(stderr, "\tImage query received from peer!\n");
     
     // Read remainder of p2p_image_query_t packet
-    size_t bytes_remaining = sizeof(p2p_image_query_t) - message.size();
-    while (message.size() < bytes_remaining) {
+    p2p_image_query_t image_query;
+    size_t image_query_body_len = sizeof(image_query) - packet_header_len;
+    while (message.size() < image_query_body_len) {
       message += connection.read();
     }
 
     // Validate packet length
-    if (bytes_remaining != message.size()){
+    if (image_query_body_len != message.size()){
       // Shouldn't be any more bytes on the wire at the end 
       // of a p2p image query packet...
       fprintf(
           stderr,
           "\tERROR: invalid image query message length. Expected: %zi, received: %zi\n",
-          bytes_remaining,
+          image_query_body_len,
           message.size()
       );
       exit(1);
     }
 
     // Deserialize image query packet
-    p2p_image_query_t image_query;
     image_query.header = packet_header;
-
-    memcpy(&image_query.search_id, message.c_str(), bytes_remaining);
+    memcpy(&image_query.search_id, message.c_str(), image_query_body_len);
 
     // Report p2p image query specifics
     fprintf(
@@ -967,8 +1037,9 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
         image_query.file_name,
         image_query.search_id
     );
-   
-    handleP2pImageQuery(image_query, connection, img_net); 
+ 
+    // Broadcast image query
+    queryNetworkForImage(image_query, &connection, img_net); 
 
   } else {
     // Report invalid packet type
@@ -977,6 +1048,7 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
         "ERROR: invalid packet type(%i) received!\n",
         packet_header.type
     );
+    exit(1);
   }
 }
 
