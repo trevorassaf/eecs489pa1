@@ -26,7 +26,37 @@
 #define NETIMG_MSS      1440
 #define NETIMG_USLEEP 250000    // 250 ms
 
-#define MAX_RPEERS 6
+#define PR_MAXPEERS 6
+#define PR_MAXFQDN 256
+
+#define PR_ADDRESS_FLAG 'p'
+#define PR_PORT_DELIMITER ':'
+#define PR_MAXPEERS_FLAG 'n'
+#define PR_CLI_OPT_PREFIX '-'
+
+#define PR_QLEN   10 
+#define PR_LINGER 2
+
+#define PM_VERS   0x1
+#define PM_SEARCH 0x4
+
+#define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
+
+
+/**
+ * Message type codes.
+ */
+enum MessageType {
+  WELCOME  = 0x1,
+  REDIRECT = 0x2,
+  SEARCH = 0x4
+};
+
+/**
+ * Cli option types.
+ */
+enum CliOption {P, N};
+
 
 /**
  * Header for all packets.
@@ -35,11 +65,17 @@ struct packet_header_t {
   unsigned char vers, type;
 };
 
+/**
+ * Packet for client image queries. 
+ */
 struct iqry_t {
   packet_header_t header;
   char iq_name[NETIMG_MAXFNAME];
 };
 
+/**
+ * Packet header for message transfers.
+ */
 struct imsg_t {
   packet_header_t header;
   unsigned char im_found;
@@ -69,9 +105,11 @@ struct p2p_image_query_t {
   char file_name[NETIMG_MAXFNAME];
 };
 
-// TODO change this to use packet_header_t
-struct message_header {
-  char vers, type;
+/**
+ * Header for recommending peers.
+ */
+struct peering_response_header_t {
+  packet_header_t header;
   uint16_t num_peers;
 };
 

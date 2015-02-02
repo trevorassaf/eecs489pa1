@@ -103,7 +103,7 @@ class ImageNetwork {
     * addImageQuery()
     * - Track this image query packet by adding to the "seen"
     *   history for this node.
-    * - Simulates a curcular array with max-size MAX_PEERS
+    * - Simulates a curcular array with max-size PR_MAXPEERS 
     * @param query_packet : packet to track  
     */
    void addImageQuery(const p2p_image_query_t& query_packet);

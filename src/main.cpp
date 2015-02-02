@@ -18,36 +18,6 @@
 #include "ImageNetwork.h"
 #include "ltga.h"
 
-#define PR_MAXPEERS 6
-#define PR_MAXFQDN 256
-
-#define PR_ADDRESS_FLAG 'p'
-#define PR_PORT_DELIMITER ':'
-#define PR_MAXPEERS_FLAG 'n'
-#define PR_CLI_OPT_PREFIX '-'
-
-#define PR_QLEN   10 
-#define PR_LINGER 2
-
-#define PM_VERS   0x1
-#define PM_SEARCH 0x4
-
-#define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
-
-
-/**
- * Message type codes.
- */
-enum MessageType {
-  WELCOME  = 0x1,
-  REDIRECT = 0x2
-};
-
-/**
- * Cli option types.
- */
-enum CliOption {P, N};
-
 /**
  * FQDN field pair.
  */
@@ -153,14 +123,14 @@ void autoJoin(
   MessageType message_type) 
 {
   // Compose redirect message
-  message_header join_header;
-  join_header.vers = PM_VERS;
-  join_header.type = message_type;
+  peering_response_header_t join_header;
+  join_header.header.vers = PM_VERS;
+  join_header.header.type = message_type;
 
   size_t num_join_peers = 
-      p2p_table.getNumPeers() < MAX_RPEERS 
+      p2p_table.getNumPeers() < PR_MAXPEERS 
           ? p2p_table.getNumPeers() 
-          : MAX_RPEERS;
+          : PR_MAXPEERS;
   join_header.num_peers = num_join_peers;
 
   size_t join_header_len = sizeof(join_header);
@@ -443,14 +413,14 @@ const p2p_image_query_t genOriginalP2pImageQuery(
 }
 
 /**
- * handleImageQuery()
+ * handleClientImageQuery()
  * - Register image query and search for image. Begin search locally.
  *   If this node can't find the requested image, then the node queries
  *   the p2p network for the image.
  * @param connection : querying client
  * @param img_net : image network
  */
-void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
+void handleClientImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
   LTGA image;
   imsg_t image_packet;
   memset(&image_packet, 0, sizeof(image_packet));
@@ -493,6 +463,25 @@ void handleImageQuery(const iqry_t& iqry_packet, ImageNetwork& img_net) {
  * @param img_net : image network
  */
 void handleImageTransfer(const Connection* connection, ImageNetwork& img_net) {}
+
+/**
+ * handleP2pImageQuery()
+ * - Process p2p traffic on the image-network. 2 cases:
+ * @param header : header for p2p image packet
+ * @param fd : file descriptor for connection
+ * @param img_net : image network data
+ */
+void handleP2pImageQuery(const packet_header_t& header, int fd, ImageNetwork& img_net) {
+
+  // Fetch connection
+  const Connection& peer_client = img_net.getP2pTable().fetchConnectionByFd(fd);
+
+  size_t
+
+
+
+
+}
 
 /**
  * handleImageTraffic()
@@ -577,7 +566,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
 
       img_net.setImageClient(connection);
 
-      handleImageQuery(iqry_packet, img_net); 
+      handleClientImageQuery(iqry_packet, img_net); 
     }
   } else if (isImageTransfer(header)) {
 
@@ -610,12 +599,12 @@ void handleImageTraffic(ImageNetwork& img_net) {
 }
 
 /**
- * handlePeerTraffic()
+ * handlePeeringClient()
  * - Accept peering request, if space available. Redirect, otherwise.
  * @param service : service listening for incoming connections
  * @param p2p_table : peer node registry
  */
-void handlePeerTraffic(const Service& p2p_service, P2pTable& p2p_table) {
+void handlePeeringClient(const Service& p2p_service, P2pTable& p2p_table) {
   
   // Accept connection
   const Connection connection = p2p_service.accept();
@@ -630,54 +619,212 @@ void handlePeerTraffic(const Service& p2p_service, P2pTable& p2p_table) {
 }
 
 /**
- * handleIncomingMessage()
+ * handlePeeringResponseTraffic()
+ * - Process peering responses (2 cases):
+ *   1. Remote peer accepted the connection from this node.
+ *   2. Remote peer rejected the connection from this node (redirection)
+ * @param header : header for packet  
+ * @param connection : remote peer
+ * @param img_net : image network data
+ */
+void handlePeeringResponseTraffic(
+  const packet_header& header,
+  const Connection& connection,
+  ImageNetwork& img_net
+) {
+
+  P2pTable& p2p_table = img_net.getP2pTable();
+ 
+  // Register connection state change
+  switch (header.type) {
+    // Connection was accepted by peer
+    case WELCOME:
+      // Transfer 'connection' state from 'pending' -> 'connected'
+      p2p_table.registerConnectedPeer(connection);
+     
+      // Report connection
+      fprintf(
+        stderr,
+        "\tJoin accepted! "
+      );
+      break;
+    
+    // Peering request was rejected by peer
+    case REDIRECT:
+      // Transfer 'connection' state from 'pending' -> 'rejected'
+      p2p_table.registerRejectedPeer(connection);  
+
+      // Report redirection
+      fprintf(
+        stderr,
+        "\tJoin redirected! "
+      );
+      break;
+
+    default:
+      // Report invalid packet type, then fail
+      fprintf(
+          stderr,
+          "ERROR: invalid packet type(%i) received!\n",
+          header.type
+      );
+      exit(1);
+  }
+
+  // Read remainder of packet
+  peering_response_header_t resp_header;
+  resp_header.header.vers = header.vers;
+  resp_header.header.type = header.type;
+
+  size_t resp_header_len = sizeof(resp_header);
+  size_t 
+}
+
+/**
+ * handleP2pTraffic()
  * - Process message from peer.
  * @param service_port : port that service is running on (host-byte-order).
  *    All outgoing connections should bind to this local port.
+ * @param service_port : port that the p2p service is runnning on 
  * @param fd : socket fd
- * @param p2p_table : peer node registry
+ * @param img_net : image network 
  */
-void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
+void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
   
-  // Read header from peer.
   // WARNING: can't be reference because we will delete the original
   // and access this connection again.
+  P2pTable& p2p_table = img_net.getP2pTable();
   const Connection connection = p2p_table.fetchConnectionByFd(fd);
 
+  // Report response from peer 
   fprintf(
       stderr,
-      "\nReceived ack from %s:%d\n",
+      "\nReceived p2p message from %s:%d\n",
       connection.getRemoteDomainName().c_str(),
       connection.getRemotePort()
   );
   
-  message_header header;
-  size_t message_header_len = sizeof(header);
+  // Read header from wire to determine packet type
+  packet_header_t packet_header;
+  size_t packet_header_len = sizeof(packet_header);
   std::string message;
   
-  while (message.size() < message_header_len) {
+  while (message.size() < packet_header_len) {
     message += connection.read();
   }
 
-  // Deserialize message and transform fields to host-byte-order
-  memcpy(&header, message.c_str(), message_header_len);
+  // Deserialize packet-header and consume in buffer  
+  memcpy(&packet_header, message.c_str(), packet_header_len);
+  message = message.substr(packet_header_len);
 
-  // Register peer state change and notify user
-  if (header.type == REDIRECT) {
-    p2p_table.registerRejectedPeer(fd);  
-
+  // Validate packet version
+  if (packet_header.vers != PM_VERS) {
+    // Report invalid version number
     fprintf(
-      stderr,
-      "\tJoin redirected! "
-    );
-  } else {
-    p2p_table.registerConnectedPeer(fd);
+        stderr,
+        "ERROR: invalid packet version number(%i) received from peer %s:%d\n",
+        packet_header.vers,
+        connection.getRemoteDomainName().c_str(),
+        connection.getRemotePort()
+    ); 
+    exit(1);
+  }
+
+  // Determine traffic type of packet
+  if (packet_header.type == WELCOME || packet_header.type == REDIRECT) {
+    // Report peering response
+    fprintf(
+        stderr,
+        "\tPeering response received!\n"
+    );     
+
+    // Read remainder of peering_response_header_t packet
+    peering_response_header_t resp_header;
+    size_t bytes_remaining = sizeof(resp_header);
     
+    while (message.size() < bytes_remaining) {
+      message += connection.read();
+    }
+    
+    // Validate peering response packet length
+    if (bytes_remaining != message.size()) {
+      // Report invalid peering response packet length
+      fprintf(
+          stderr,
+          "\tERROR: invalid peering response message length. Expected: %i, received: %i\n",
+          bytes_remaining,
+          message.size()
+      );
+      exit(1);
+    }
+
+    // Deserialize peering response packeet
+    resp_header.header.vers = packet_header.vers;
+    resp_header.header.type = packet_header.type;
+
+    memcpy(&resp_header.num_peers, message.c_str(), bytes_remaining);
+
+
     fprintf(
-      stderr,
-      "\tJoin accepted! "
+        stderr,
+        "\t");
+
+   
+
+    handlePeeringResponse(packet_header, connection, img_net);
+
+  } else if (packet_header.type == SEARCH) {
+    // Report image traffic
+    fprintf(
+        stderr,
+        "\tImage query received!\n"
+    );
+    
+    // Read remainder of p2p_image_query_t packet
+    size_t bytes_remaining = sizeof(p2p_image_query_t) - message.size();
+    while (message.size() < bytes_remaining) {
+      message += connection.read();
+    }
+
+    // Validate packet length
+    if (bytes_remaining != message.size()) {
+      // Report invalid image query packet length
+      fprintf(
+          stderr,
+          "\tERROR: invalid image query message length. Expected: %i, received: %i\n",
+          bytes_remaining,
+          message.size()
+      );
+      exit(1);
+    }
+
+    // Deserialize image query packet
+    p2p_image_query_t image_query;
+    image_query.header.vers = packet_header.vers;
+    image_query.header.type = packet_header.type;
+
+    memcpy(&image_query.search_id, message.c_str(), bytes_remaining);
+
+    // Report p2p image query
+    fprintf(
+        stderr,
+        "\tImage query: peer(orig-ipv4: %i, orig-port: %i) is querying for %s with search-id: %i\n",
+        ntohl(image_query.orig_peer.ipv4),
+        ntohs(image_query.orig_peer.port),
+        ntohs(image_query.search_id)
+    );
+   
+    handleP2pImageQuery(image_query, connection, img_net); 
+
+  } else {
+    // Report invalid packet type
+    fprintf(
+        stderr,
+        "ERROR: invalid packet type(%i) received!\n",
+        packet_header.type
     );
   }
+
 
   if (p2p_table.isFull()) {
     fprintf(
@@ -692,25 +839,25 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
   }
 
   // Read auto-join nodes from peer
-  if (header.num_peers) {
+  if (p2p_packet_header.num_peers) {
     // Fail due to negative 'num-peers'
-    assert(header.num_peers > 0);
+    assert(p2p_packet_header.num_peers > 0);
     
     size_t peer_addr_size = sizeof(peer_addr);
-    size_t message_body_len = peer_addr_size * header.num_peers;
+    size_t message_body_len = peer_addr_size * p2p_packet_header.num_peers;
     
-    message = message.substr(message_header_len);
+    message = message.substr(p2p_packet_header_len);
     
-    while (message.size() != message_body_len) {
+    while (message.size() < message_body_len) {
       message += connection.read();
     }
 
     const char* message_cstr = message.c_str();
     std::vector<peer_addr> peers_to_join;
-    peers_to_join.reserve(header.num_peers);
+    peers_to_join.reserve(p2p_packet_header.num_peers);
 
     // Report recommended peers
-    fprintf(stderr, "\tRecommended peers: %i\n", header.num_peers);
+    fprintf(stderr, "\tRecommended peers: %i\n", p2p_packet_header.num_peers);
 
     // Deserialize message body
     for (size_t i = 0; i < message_body_len; i += peer_addr_size) {
@@ -848,7 +995,7 @@ void runImageNetwork(
 
     // Handle incoming connection
     if (FD_ISSET(p2p_service.getFd(), &rset)) {
-      handlePeerTraffic(p2p_service, p2p_table);
+      handlePeeringClient(p2p_service, p2p_table);
     }
     
     // Handle incoming connection
@@ -859,7 +1006,7 @@ void runImageNetwork(
     // Handle messages from peer nodes
     for (int fd : peering_fds) {
       if (FD_ISSET(fd, &rset)) {
-        handleIncomingMessage(p2p_service.getPort(), fd, p2p_table);
+        handleP2pTraffic(p2p_service.getPort(), fd, img_net);
       } 
     }
 

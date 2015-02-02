@@ -49,7 +49,7 @@ void ImageNetwork::invalidateImageClient() {
 
 void ImageNetwork::addImageQuery(const p2p_image_query_t& query_packet) {
   // Pop front if history is overflowing
-  if (packetHistory_.size() == MAX_RPEERS) {
+  if (packetHistory_.size() == PR_MAXPEERS) {
     packetHistory_.pop_front(); 
   }
 

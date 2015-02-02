@@ -85,7 +85,12 @@ void P2pTable::registerConnectedPeer(const Connection& peer) {
   assert(!isRejectedPeer(peer) &&
       !isConnectedPeer(peer.getFd()));
 
-  peerTable_.emplace(peer.getFd(), ConnectionInfo{peer, false});
+  // Transfer peer, if already in map, else, make a new entry in map
+  if (isPendingPeer(peer.getFd())) {
+    registerConnectedPeer(peer.getFd());
+  } else {
+    peerTable_.emplace(peer.getFd(), ConnectionInfo{peer, false});
+  }
 }
 
 void P2pTable::registerConnectedPeer(int peer_fd) {
