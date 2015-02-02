@@ -394,6 +394,8 @@ void queryNetwork(const p2p_image_query_t& p2p_query, ImageNetwork& img_net) {
 
   // Forward query to connected peers
   const std::vector<const Connection*> connected_peers = img_net.getP2pTable().fetchConnectedPeers();
+  std::cout << "\n\npeer-table size: " << img_net.getP2pTable().getNumPeers() << 
+      ", # connected peers: " << connected_peers.size() << std::endl;
 
   for (const Connection* peer : connected_peers) {
     // Report forwarded image
@@ -542,6 +544,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
       rejectImageQuery(connection);
 
       // Close connection
+      connection->close();
       delete connection;
     } else {
       // Notify user of image query acceptance 
@@ -588,6 +591,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
     handleImageTransfer(connection, img_net); 
     
     // Close connection
+    connection->close();
     delete connection;
 
   } else {
@@ -600,6 +604,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
     );
 
     // Close connection
+    connection->close();
     delete connection;
   }
 }
@@ -611,7 +616,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
  * @param p2p_table : peer node registry
  */
 void handlePeerTraffic(const Service& p2p_service, P2pTable& p2p_table) {
- 
+  
   // Accept connection
   const Connection connection = p2p_service.accept();
 
@@ -657,6 +662,35 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
   // Deserialize message and transform fields to host-byte-order
   memcpy(&header, message.c_str(), message_header_len);
 
+  // Register peer state change and notify user
+  if (header.type == REDIRECT) {
+    p2p_table.registerRejectedPeer(fd);  
+
+    fprintf(
+      stderr,
+      "\tJoin redirected! "
+    );
+  } else {
+    p2p_table.registerConnectedPeer(fd);
+    
+    fprintf(
+      stderr,
+      "\tJoin accepted! "
+    );
+  }
+
+  if (p2p_table.isFull()) {
+    fprintf(
+      stderr,
+      "Local peer table is full -- subsequent peering requests will be redirected.\n\n"
+    );
+  } else {
+    fprintf(
+      stderr,
+      "Local peer table has room -- attempting to connect to more peers.\n\n"
+    );
+  }
+
   // Read auto-join nodes from peer
   if (header.num_peers) {
     // Fail due to negative 'num-peers'
@@ -675,7 +709,8 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
     std::vector<peer_addr> peers_to_join;
     peers_to_join.reserve(header.num_peers);
 
-    fprintf(stderr, "\twhich is peered with %i peers:\n", header.num_peers);
+    // Report recommended peers
+    fprintf(stderr, "\tRecommended peers: %i\n", header.num_peers);
 
     // Deserialize message body
     for (size_t i = 0; i < message_body_len; i += peer_addr_size) {
@@ -721,35 +756,6 @@ void handleIncomingMessage(uint16_t service_port, int fd, P2pTable& p2p_table) {
           domain_name,
           peer.port,
           connection_type_str.c_str()
-      );
-    }
-
-    // Register peer state change and notify user
-    if (header.type == REDIRECT) {
-      p2p_table.registerRejectedPeer(fd);  
-
-      fprintf(
-        stderr,
-        "\tJoin redirected! "
-      );
-    } else {
-      p2p_table.registerConnectedPeer(fd);
-      
-      fprintf(
-        stderr,
-        "\tJoin accepted! "
-      );
-    }
-
-    if (p2p_table.isFull()) {
-      fprintf(
-        stderr,
-        "Local peer table is full -- subsequent peering requests will be redirected.\n\n"
-      );
-    } else {
-      fprintf(
-        stderr,
-        "Local peer table has room -- attempting to connect to more peers.\n\n"
       );
     }
    

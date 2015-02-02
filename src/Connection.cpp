@@ -49,10 +49,6 @@ Connection::Connection(
   remoteDomainName_ = std::string(hostname);
 }
 
-Connection::~Connection() {
-  close();
-}
-
 int Connection::getFd() const {
   return fileDescriptor_;
 }

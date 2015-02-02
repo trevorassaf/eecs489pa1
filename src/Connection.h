@@ -46,12 +46,6 @@ class Connection {
     explicit Connection(int file_descriptor); 
 
     /**
-     * ~Connection()
-     * - Dtor for Connection. Closes socket.
-     */
-    ~Connection();
-
-    /**
      * getFd()
      * - Return fild descriptor for socket.
      */
