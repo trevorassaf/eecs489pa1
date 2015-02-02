@@ -70,7 +70,7 @@ imgdb_loadimg(const char *fname, LTGA *image, imsg_t *imsg, long *img_size)
     imsg->im_found = NETIMG_NFOUND;
   } else {
     imsg->im_found = NETIMG_FOUND;
-
+/*
     cout << "Image: " << endl;
     cout << "     Type   = " << LImageTypeString[image->GetImageType()] 
          << " (" << image->GetImageType() << ")" << endl;
@@ -78,7 +78,7 @@ imgdb_loadimg(const char *fname, LTGA *image, imsg_t *imsg, long *img_size)
     cout << "     Height = " << image->GetImageHeight() << endl;
     cout << "Pixel depth = " << image->GetPixelDepth() << endl;
     cout << "Alpha depth = " << image->GetAlphaDepth() << endl;
-    cout << "RL encoding = " << (((int) image->GetImageType()) > 8) << endl;
+    cout << "RL encoding = " << (((int) image->GetImageType()) > 8) << endl;*/
     /* use image->GetPixels()  to obtain the pixel array */
     
     img_dsize = (double) (image->GetImageWidth()*image->GetImageHeight()*(image->GetPixelDepth()/8));

@@ -131,7 +131,7 @@ void autoJoin(
       p2p_table.getNumPeers() < PR_MAXPEERS 
           ? p2p_table.getNumPeers() 
           : PR_MAXPEERS;
-  join_header.num_peers = num_join_peers;
+  join_header.num_peers = htons(num_join_peers);
 
   size_t join_header_len = sizeof(join_header);
   std::string message((char *) &join_header, join_header_len); 
@@ -147,7 +147,7 @@ void autoJoin(
     const Connection& connection = p2p_table.fetchConnectionByFd(fd);
 
     peer_addr_t peer = 
-        { connection.getRemoteIpv4(), connection.getRemotePort(), 0 };
+        { htonl(connection.getRemoteIpv4()), htons(connection.getRemotePort()), 0 };
     size_t peer_len = sizeof(peer);
 
     message += std::string((char *) &peer, peer_len);
@@ -155,6 +155,7 @@ void autoJoin(
 
   // Send auto-join message to requesting peer
   size_t remaining_chars = message.size(); 
+
   while (remaining_chars) {
     remaining_chars = connection.write(message);
     message = message.substr(message.size() - remaining_chars);
@@ -247,20 +248,6 @@ bool isImageTransfer(const packet_header_t& header) {
 }
 
 /**
- * sendImsgPacket()
- * - Send imsg_t to specified target.
- * @param packet : imsg_t to send
- * @param connection : target to which to send packet
- */
-void sendImsgPacket(const imsg_t& packet, const Connection* connection) {
-  std::string message( (char *) &packet, sizeof(packet));
-  while (message.size()) {
-    size_t bytes_remaining = connection->write(message);
-    message = message.substr(message.size() - bytes_remaining);
-  }
-}
-
-/**
  * rejectImageQuery()
  * - Send rejection message to querying client.
  * @param connection : querying client  
@@ -269,17 +256,116 @@ void rejectImageQuery(const Connection* connection) {
   // Assemble imsg packet
   imsg_t imsg_packet;
   imsg_packet.header = {NETIMG_VERS, NETIMG_RPY};
-  imsg_packet.im_found = NETIMG_EBUSY;
+  imsg_packet.im_found = htons(NETIMG_EBUSY);
 
   // Send query rejection
-  sendImsgPacket(imsg_packet, connection);
+  std::string message( (char *) &imsg_packet, sizeof(imsg_packet));
+
+  while (message.size()) {
+    size_t bytes_remaining = connection->write(message);
+    message = message.substr(message.size() - bytes_remaining);
+  }
+}
+
+/**
+ * transferImage()
+ * - Stream image file to the specified address.
+ * @param destination : destination address
+ * @param image_pixels : image file pixel data
+ * @param image_packet_header : packet that carries image-metadata (network-byte-order)
+ * @param image_size : size of image
+ */
+void transferImage(
+  const Connection& destination,
+  const char* image_pixels,
+  const imsg_t& image_packet,
+  long image_size
+) {
+
+  // Fail because 'image-pixels' should contain valid image data
+  assert(image_pixels);
+  
+  // Send image packet to destination  address
+  size_t packet_size = sizeof(imsg_t);
+  std::string image_packet_str( (char *) &image_packet, packet_size);
+  size_t remaining_packet_bytes = packet_size;
+
+  while (image_packet_str.size()) {
+    remaining_packet_bytes = destination.write(image_packet_str); 
+    image_packet_str = image_packet_str.substr(image_packet_str.size() - remaining_packet_bytes);
+  }
+
+  // Send image (if found) in chunks of 'segsize'
+  size_t segsize = image_size / NETIMG_NUMSEG;
+  segsize = segsize < NETIMG_MSS ? NETIMG_MSS : segsize;
+  std::string image_pixels_str(image_pixels, image_size);
+  size_t segment_bytes_remaining = 0;
+
+  while (image_pixels_str.size()) {
+    segsize = std::min(segsize, image_pixels_str.size());
+    segment_bytes_remaining = destination.write(image_pixels_str.substr(0, segsize));
+    
+    size_t segment_bytes_sent = segsize - segment_bytes_remaining;
+
+    // Notify user of segment send
+    fprintf(
+        stderr,
+        "\t\tSending image segment: size: %zi, sent:%zi\n",
+        image_pixels_str.size(),
+        segment_bytes_sent
+    );
+    
+    // Consume sent bytes
+    image_pixels_str = image_pixels_str.substr(segment_bytes_sent);
+    
+    // Throttle segement sends
+    usleep(NETIMG_USLEEP);
+  }
+}
+
+/**
+ * returnImageToOriginatingPeer()
+ * - Stream local image to originating peer (can't be us)
+ * @param image_pixels : image pixel array (null if no image)
+ * @param image_packet : packet containing image data (network-byte-order)
+ * @param image_size : dimensions of image
+ * @param image_query : image query packet (network-byte-order)
+ * @param img_net : image network
+ */
+void returnImageToOriginatingPeer(
+  const char* image_pixels,
+  const imsg_t& image_packet,
+  long image_size,
+  const p2p_image_query_t& image_query,
+  ImageNetwork& img_net
+) {
+ 
+  // Fail because we should't be the originating peer...
+  assert(!img_net.hasImageClient() || 
+      htonl(img_net.getImageClient().getLocalIpv4()) != image_query.orig_peer.ipv4 || 
+      htons(img_net.getImageClient().getLocalPort()) != image_query.orig_peer.port);
+
+  // Connect to originating peer (on image socket, not p2p socket)
+  ServerBuilder builder;
+  const Connection originating_peer = builder
+      .setRemotePort(ntohs(image_query.orig_peer.port))
+      .setRemoteIpv4Address(ntohl(image_query.orig_peer.ipv4))
+      .setLocalPort(img_net.getImageService().getPort())  /* already host-byte-order!*/
+      .enableAddressReuse()
+      .build();
+
+  // Send message to originating peer
+  transferImage(originating_peer, image_pixels, image_packet, image_size);
+
+  // Close connection to originating peer
+  originating_peer.close();
 }
 
 /**
  * returnImageToClient()
- * - Stream local image to client.
+ * - Stream local image to client from originating peer (us).
  * @param image_pixels : image pixel array (null if no image)
- * @param image_packet : packet containing image data
+ * @param image_packet : packet containing image data (network-byte-order)
  * @param image_size : dimensions of image
  * @param img_net : image network
  */
@@ -289,49 +375,15 @@ void returnImageToClient(
   long image_size,
   ImageNetwork& img_net
 ) {
-  
+
+  // Fetch connection to image client
   const Connection& image_client = img_net.getImageClient();
 
-  // Send image packet 
-  size_t packet_size = sizeof(imsg_t);
-  std::string image_packet_str( (char *) &image_packet, packet_size);
-  size_t remaining_packet_bytes = packet_size;
-
-  while (remaining_packet_bytes) {
-    remaining_packet_bytes = image_client.write(image_packet_str); 
-    image_packet_str = image_packet_str.substr(image_packet_str.size() - remaining_packet_bytes);
-  }
-
-  // Send image (if found) in chunks of 'segsize'
-  if (image_pixels) {
-    size_t segsize = image_size / NETIMG_NUMSEG;
-    segsize = segsize < NETIMG_MSS ? NETIMG_MSS : segsize;
-    std::string image_pixels_str(image_pixels, image_size);
-    size_t segment_bytes_remaining = 0;
-
-    while (image_pixels_str.size()) {
-      segsize = std::min(segsize, image_pixels_str.size());
-      segment_bytes_remaining = image_client.write(image_pixels_str.substr(0, segsize));
-      
-      size_t segment_bytes_sent = segsize - segment_bytes_remaining;
-
-      // Notify user of segment send
-      fprintf(
-          stderr,
-          "\tSending image segment: size: %zi, sent:%zi\n",
-          image_pixels_str.size(),
-          segment_bytes_sent
-      );
-      
-      // Consume sent bytes
-      image_pixels_str = image_pixels_str.substr(segment_bytes_sent);
-      
-      // Throttle segement sends
-      usleep(NETIMG_USLEEP);
-    }
-  }
+  // Send message to image client
+  transferImage(image_client, image_pixels, image_packet, image_size);
 
   // Close connection and prepare image-network to service next image query
+  image_client.close();
   img_net.invalidateImageClient();
 }
 
@@ -410,7 +462,8 @@ void queryNetworkForImage(
  * - Assemble packet for querying the p2p network for an image.
  * @param iqry_packet : initial query packet sent by client
  * @param image_net : data for this image-network node
- * @return p2p_image_query_t : packet for querying the p2p image-network 
+ * @return p2p_image_query_t : packet for querying the 
+ *    p2p image-network (network-byte-order)
  */
 const p2p_image_query_t genOriginalP2pImageQuery(
   const iqry_t& iqry_packet,
@@ -424,8 +477,8 @@ const p2p_image_query_t genOriginalP2pImageQuery(
   // Packet body
   p2p_query.search_id = htons(image_net.genSearchId());
 
-  p2p_query.orig_peer.ipv4 = htonl(image_net.getImageClient().getRemoteIpv4());
-  p2p_query.orig_peer.port = htons(image_net.getImageClient().getRemotePort());
+  p2p_query.orig_peer.ipv4 = htonl(image_net.getImageClient().getLocalIpv4());
+  p2p_query.orig_peer.port = htons(image_net.getImageClient().getLocalPort());
 
   memcpy(p2p_query.file_name, iqry_packet.iq_name, NETIMG_MAXFNAME);
 
@@ -437,7 +490,7 @@ const p2p_image_query_t genOriginalP2pImageQuery(
  * - Register image query and search for image. Begin search locally.
  *   If this node can't find the requested image, then the node queries
  *   the p2p network for the image.
- * @param image_query : image query packet 
+ * @param image_query : image query packet (network-byte-order)
  * @param querying_peer : querying peer node 
  * @param img_net : image network
  */
@@ -447,12 +500,12 @@ void processImageQuery(
   ImageNetwork& img_net
 ) {
   
+  // Search for image locally
   LTGA image;
   imsg_t image_packet;
   memset(&image_packet, 0, sizeof(image_packet));
   long image_size;
  
-  // Search for image locally
   if (imgdb_loadimg(
         image_query.file_name,
         &image,
@@ -462,17 +515,14 @@ void processImageQuery(
 
     // Check if we're the 'originating peer'
     if (img_net.hasImageClient() &&
-        img_net.getImageClient().getLocalIpv4() == image_query.orig_peer.ipv4 &&
-        img_net.getImageClient().getLocalPort() == image_query.orig_peer.port)
+        htonl(img_net.getImageClient().getLocalIpv4()) == image_query.orig_peer.ipv4 &&
+        htons(img_net.getImageClient().getLocalPort()) == image_query.orig_peer.port)
     {
-      // Fail because we should've found the image without 
-      // having to go to the network
-      assert(!querying_peer);
 
       // Notify user that local node (originating peer) has image
       fprintf(
           stderr,
-          "\tFound %s locally on originating peer! Sending back to netimg client, %s:%d\n",
+          "\tFound %s locally on originating peer!\nSending back to netimg client, %s:%d\n",
           image_query.file_name,
           img_net.getImageClient().getRemoteDomainName().c_str(),
           img_net.getImageClient().getRemotePort()
@@ -487,14 +537,14 @@ void processImageQuery(
     // Notify user that local node (non-originating peer) has image
     fprintf(
         stderr,
-        "\tFound %s locally on non-originating peer! Sending back to originating peer, %s:%d...\n",
+        "\tFound %s locally on non-originating peer!\nSending back to originating peer, %s:%d...\n",
         image_query.file_name,
         img_net.getImageClient().getRemoteDomainName().c_str(),
         img_net.getImageClient().getRemotePort()
     );
 
     // Send image back to client
-    returnImageToOriginatingPeer( (char *) image.GetPixels(), image_packet, image_size, img_net); 
+    returnImageToOriginatingPeer( (char *) image.GetPixels(), image_packet, image_size, image_query, img_net); 
     
     return;
   }
@@ -511,36 +561,76 @@ void processImageQuery(
 }
 
 /**
- * handleImageTransfer()
- * - Receive image from transfering peer and forward result to querying client.
- * @param connection : peer that's transfering image  
- * @param img_net : image network
- */
-void handleImageTransfer(const Connection* connection, ImageNetwork& img_net) {}
-
-/**
- * handleP2pImageQuery()
- * - Received image query from peer.
- *   1. Drop packet if we've seen it before.
- *   2. Check to see if we have the image. If so, stream to originating peer.
- *   3. Broadcast query to all peers except 'peer-client'
- * @param image_query : image query packet 
- * @param peer_client : connection to the peer sending us the image query
+ * handleImageTransferTraffic()
+ * - Receive image transfer from peer.
+ * @param buffer : buffer for network data (CAUTION; may already have data on it) 
+ * @param connection : connection to peer that is transfering the image
  * @param img_net : image network data
  */
-void handleP2pImageQuery(
-  const p2p_image_query_t& image_query,
-  const Connection& peer_client,
+void handleImageTransferTraffic(
+  std::string& buffer,
+  const Connection& connection,
   ImageNetwork& img_net
 ) {
- 
-  if (img_net.hasSeenP2pImageQuery(image_query)) {
-    // Notify user that we've broadcasted this packet already...  
-    fprintf(stderr, "\tDropping query because we've seen it already!\n");
-    return; /* exit early because we've already seen this query */
+  
+  // Fail because we're not an 'originating peer'
+  assert(img_net.hasImageClient());
+
+  // Read image transfer header bytes from wire
+  imsg_t imsg_packet;
+  size_t imsg_len = sizeof(imsg_packet);
+
+  while (buffer.size() < imsg_len) {
+    buffer += connection.read();
   }
 
-  
+  // Deserialize image-transfer header and consume buffer bytes
+  memcpy(&imsg_packet, buffer.c_str(), buffer.size());
+  buffer = buffer.substr(imsg_len);
+
+  // Report image transfer
+  fprintf(
+      stderr,
+      "\tReceived image metadata: <depth: %hhu, format: %hu, width: %hu, height: %hu>\n",
+      imsg_packet.im_depth,
+      ntohs(imsg_packet.im_format),
+      ntohs(imsg_packet.im_width),
+      ntohs(imsg_packet.im_height)
+  );
+
+  // Read image file bytes from the wire
+  size_t image_pixels_len = 
+    ntohs(imsg_packet.im_width) * 
+    ntohs(imsg_packet.im_height) * 
+    ntohs(imsg_packet.im_depth);
+
+  while (buffer.size() < image_pixels_len) {
+    buffer += connection.read();
+  }
+
+  // Validate image-file size
+  if (buffer.size() != image_pixels_len) {
+    // Report invalid image-file size
+    fprintf(
+        stderr,
+        "\tERROR: invalid image file packet size! Expected: %zi, received: %zi\n",
+        image_pixels_len,
+        buffer.size()
+    ); 
+    exit(1);
+  } 
+
+  // Report image transfer
+  fprintf(
+      stderr,
+      "\tReceived image at originating client (%zi bytes). Now transfering to image client, %s:%d\n",
+      image_pixels_len,
+      img_net.getImageClient().getRemoteDomainName().c_str(),
+      img_net.getImageClient().getRemotePort()
+  );
+
+  // Send image bytes to image client
+  returnImageToClient(buffer.c_str(), imsg_packet, image_pixels_len, img_net);
 }
 
 /**
@@ -595,25 +685,30 @@ void handleImageTraffic(ImageNetwork& img_net) {
 
     } else {
       // Notify user of image query acceptance 
-      fprintf(
-        stderr,
-        "\tServicing image query!\n"
-      );
+      fprintf(stderr, "\tServicing image query!\n");
 
       // Finish reading iqry_t packet
       iqry_t iqry_packet;
       size_t iqry_packet_len = sizeof(iqry_packet);
       memset(&iqry_packet, 0, iqry_packet_len);
-      iqry_packet.header = header;
-      size_t packet_header_len = sizeof(header);
-      size_t packet_body_len = iqry_packet_len - packet_header_len;
 
-      while (message.size() < packet_body_len) {
+      while (message.size() < iqry_packet_len) {
         message += connection->read();
       }
 
+      // Validate iqry message length
+      if (message.size() != iqry_packet_len) {
+        fprintf(
+            stderr,
+            "\tERROR: invalid size of iqry_t message packet. Expected: %zi, received: %zi\n",
+            iqry_packet_len,
+            message.size()
+        ); 
+        exit(1);
+      }
+
       // Deserialize message body
-      memcpy(&iqry_packet, message.c_str(), packet_body_len);
+      memcpy(&iqry_packet, message.c_str(), iqry_packet_len);
       
       // Report image query
       fprintf(
@@ -622,6 +717,8 @@ void handleImageTraffic(ImageNetwork& img_net) {
         iqry_packet.iq_name
       );
 
+      // Register new image client, now we're occupied and will 
+      // reject other image queries until this is complete
       img_net.setImageClient(connection);
 
       // Assemble image query packet
@@ -638,7 +735,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
     fprintf(stderr, "\tReceiving image transfer!\n");
     
     // Handle image transfer
-    handleImageTransfer(connection, img_net); 
+    handleImageTransferTraffic(message, *connection, img_net); 
     
     // Close connection
     connection->close();
@@ -648,7 +745,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
     // Unrecognized packet, notify user
     fprintf(
         stderr,
-        "\nWARNING: unrecognized packet header: <vers: %c, type: %c>\n",
+        "\nWARNING: unrecognized packet header: <vers: %hu, type: %hu>\n",
         header.vers,
         header.type
     );
@@ -684,7 +781,7 @@ void handlePeeringClient(const Service& p2p_service, P2pTable& p2p_table) {
  * - Process peering responses (2 cases):
  *   1. Remote peer accepted our peering attempt.
  *   2. Remote peer rejected our peering attempt (redirection)
- * @param header : header for peering_response_packet  
+ * @param header : header for peering_response_packet (network-byte-order)
  * @param buffer : buffer string (CAUTION: could have data on it)
  * @param connection : remote peer
  * @param img_net : image network data
@@ -697,7 +794,7 @@ void handleRecommendedPeerTraffic(
 ) {
 
   // Exit early if there are no recommended peers
-  if (!header.num_peers) {
+  if (!header.num_peers) { /* don't need ntohs() because checking for 0 */
     return; 
   }
 
@@ -706,7 +803,7 @@ void handleRecommendedPeerTraffic(
 
   // Read recommended peer packets from the wire
   size_t peer_addr_size = sizeof(peer_addr_t);
-  size_t message_body_len = peer_addr_size * header.num_peers;
+  size_t message_body_len = peer_addr_size * ntohs(header.num_peers);
   
   while (buffer.size() < message_body_len) {
     buffer += connection.read();
@@ -729,7 +826,7 @@ void handleRecommendedPeerTraffic(
   
   const char* message_cstr = buffer.c_str();
   std::vector<peer_addr_t> recommended_peers;
-  recommended_peers.reserve(header.num_peers);
+  recommended_peers.reserve(ntohs(header.num_peers));
 
   size_t num_available_peers = 0;
 
@@ -742,8 +839,8 @@ void handleRecommendedPeerTraffic(
     // Determine domain name of recommended peer
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(peer.port);
-    addr.sin_addr.s_addr = htonl(peer.ipv4);
+    addr.sin_port = peer.port;         /* already network-byte-order */
+    addr.sin_addr.s_addr = peer.ipv4;  /* here too */
     
     char domain_name[PR_MAXFQDN + 1];
     memset(domain_name, 0, PR_MAXFQDN + 1);
@@ -760,12 +857,15 @@ void handleRecommendedPeerTraffic(
     }
     
     // Report peering attempt 
+    uint32_t peer_ipv4_hbo = ntohl(peer.ipv4);
+    uint16_t peer_port_hbo = ntohs(peer.port);
+
     std::string connection_type_str;
-    if (p2p_table.isConnectedPeer(peer.ipv4, peer.port)) {
+    if (p2p_table.isConnectedPeer(peer_ipv4_hbo, peer_port_hbo)) {
       connection_type_str = CONNECTED_MSG;
-    } else if (p2p_table.isPendingPeer(peer.ipv4, peer.port)) {
+    } else if (p2p_table.isPendingPeer(peer_ipv4_hbo, peer_port_hbo)) {
       connection_type_str = PENDING_MSG; 
-    } else if (p2p_table.isRejectedPeer(peer.ipv4, peer.port)) {
+    } else if (p2p_table.isRejectedPeer(peer_ipv4_hbo, peer_port_hbo)) {
       connection_type_str = REJECTED_MSG; 
     } else {
       ++num_available_peers;
@@ -776,7 +876,7 @@ void handleRecommendedPeerTraffic(
         stderr,
         "\t\t%s:%d (%s)\n",
         domain_name,
-        peer.port,
+        peer_port_hbo,
         connection_type_str.c_str()
     );
   }
@@ -830,8 +930,8 @@ void handleRecommendedPeerTraffic(
       try {
         // Connect to peer
         Connection new_peer = server_builder
-            .setRemoteIpv4Address(remote_iter->ipv4)
-            .setRemotePort(remote_iter->port)
+            .setRemoteIpv4Address(ntohl(remote_iter->ipv4))
+            .setRemotePort(ntohs(remote_iter->port))
             .build();
         
         // Put connection in p2p table in 'pending' state
@@ -840,11 +940,9 @@ void handleRecommendedPeerTraffic(
         // Report peering attempt 
         fprintf(
             stderr,
-            "\t\tConnecting to peer %s:%d (recommended by %s:%d)\n",
+            "\t\tConnecting to peer %s:%d\n",
             new_peer.getRemoteDomainName().c_str(),
-            new_peer.getRemotePort(),
-            connection.getRemoteDomainName().c_str(),
-            connection.getRemotePort()
+            new_peer.getRemotePort()
         );
 
       } catch (const BusyAddressSocketException& e) {
@@ -979,13 +1077,12 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
     fprintf(
         stderr,
         "\tNumber of recommended peers: %i\n",
-        resp_header.num_peers 
+        ntohs(resp_header.num_peers)
     );
 
     // Validate peering_message_t message length
-    if (!resp_header.num_peers && message.size()) {
-      // No peers were recommended, so there shouldn't be any 
-      // additional bytes on the wire...
+    if (!resp_header.num_peers && message.size()) { /* checking for 0, don't need ntohs() */
+      // No peers were recommended, so there shouldn't be any additional bytes on the wire...
       fprintf(
           stderr,
           "\tERROR: invalid peer response message length. Expected: %zi, received: %zi\n",
@@ -996,7 +1093,7 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
     }
 
     // Handle additional peers, if provided
-    if (resp_header.num_peers) {
+    if (resp_header.num_peers) { /* don't need ntohs() here either... */
       handleRecommendedPeerTraffic(resp_header, message, connection, img_net);
     }
 

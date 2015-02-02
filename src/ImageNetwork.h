@@ -104,14 +104,14 @@ class ImageNetwork {
     * - Track this image query packet by adding to the "seen"
     *   history for this node.
     * - Simulates a curcular array with max-size PR_MAXPEERS 
-    * @param query_packet : packet to track  
+    * @param query_packet : packet to track (network byte order)
     */
    void addImageQuery(const p2p_image_query_t& query_packet);
 
    /**
     * hasSeenP2pImageQuery()
     * @param query_packet : packet to check
-    * @return true iff 'query-packet' exists in 'packetHistory'
+    * @return true iff 'query-packet' exists in 'packetHistory' (network byte order)
     */
    bool hasSeenP2pImageQuery(const p2p_image_query_t& query_packet) const;
 
