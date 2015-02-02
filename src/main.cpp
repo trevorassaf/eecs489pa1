@@ -146,7 +146,7 @@ void autoJoin(
     int fd = *iter++;
     const Connection& connection = p2p_table.fetchConnectionByFd(fd);
 
-    peer_addr peer = 
+    peer_addr_t peer = 
         { connection.getRemoteIpv4(), connection.getRemotePort(), 0 };
     size_t peer_len = sizeof(peer);
 
@@ -619,65 +619,169 @@ void handlePeeringClient(const Service& p2p_service, P2pTable& p2p_table) {
 }
 
 /**
- * handlePeeringResponseTraffic()
+ * handleRecommendedPeerTraffic()
  * - Process peering responses (2 cases):
- *   1. Remote peer accepted the connection from this node.
- *   2. Remote peer rejected the connection from this node (redirection)
- * @param header : header for packet  
+ *   1. Remote peer accepted our peering attempt.
+ *   2. Remote peer rejected our peering attempt (redirection)
+ * @param header : header for peering_response_packet  
+ * @param buffer : buffer string (CAUTION: could have data on it)
  * @param connection : remote peer
  * @param img_net : image network data
  */
-void handlePeeringResponseTraffic(
-  const packet_header& header,
+void handleRecommendedPeerTraffic(
+  const peering_response_header_t& header,
+  std::string buffer,
   const Connection& connection,
   ImageNetwork& img_net
 ) {
 
-  P2pTable& p2p_table = img_net.getP2pTable();
- 
-  // Register connection state change
-  switch (header.type) {
-    // Connection was accepted by peer
-    case WELCOME:
-      // Transfer 'connection' state from 'pending' -> 'connected'
-      p2p_table.registerConnectedPeer(connection);
-     
-      // Report connection
-      fprintf(
-        stderr,
-        "\tJoin accepted! "
-      );
-      break;
-    
-    // Peering request was rejected by peer
-    case REDIRECT:
-      // Transfer 'connection' state from 'pending' -> 'rejected'
-      p2p_table.registerRejectedPeer(connection);  
-
-      // Report redirection
-      fprintf(
-        stderr,
-        "\tJoin redirected! "
-      );
-      break;
-
-    default:
-      // Report invalid packet type, then fail
-      fprintf(
-          stderr,
-          "ERROR: invalid packet type(%i) received!\n",
-          header.type
-      );
-      exit(1);
+  // Exit early if there are no recommended peers
+  if (!header.num_peers) {
+    return; 
   }
 
-  // Read remainder of packet
-  peering_response_header_t resp_header;
-  resp_header.header.vers = header.vers;
-  resp_header.header.type = header.type;
+  // Notify user of subsequent peers
+  fprintf(stderr, "\tRecommended peer list:\n");
 
-  size_t resp_header_len = sizeof(resp_header);
-  size_t 
+  // Read recommended peer packets from the wire
+  size_t peer_addr_size = sizeof(peer_addr_t);
+  size_t message_body_len = peer_addr_size * header.num_peers;
+  
+  while (message.size() < message_body_len) {
+    message += connection.read();
+  }
+
+  // Validate message length
+  if (message.size() != message_body_len) {
+    // Fail because we received more bytes in the 'recommended-peer-message'
+    // than expected
+    fprintf(
+        stderr,
+        "\tERROR: invalid recommended peer message length. Expected: %i, received: %i\n",
+        message_body_len,
+        message.size()
+    );
+    exit(1);
+  }
+
+  P2pTable& p2p_table = img_net.getP2pTable();
+  
+  const char* message_cstr = message.c_str();
+  std::vector<peer_addr_t> recommended_peers;
+  recommended_peers.reserve(header.num_peers);
+
+  // Deserialize message body
+  for (size_t i = 0; i < message_body_len; i += peer_addr_size) {
+    peer_addr_t peer;
+    memcpy(&peer, message_cstr + i, peer_addr_size);
+    recommended_peers.push_back(peer);
+
+    // Fetch domain name of recommended peer
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(peer.port);
+    addr.sin_addr.s_addr = htonl(peer.ipv4);
+    
+    char domain_name[PR_MAXFQDN + 1];
+    memset(domain_name, 0, PR_MAXFQDN + 1);
+    if (::getnameinfo(
+      (struct sockaddr *) &addr,
+      sizeof(addr),
+      domain_name,
+      PR_MAXFQDN,
+      NULL,
+      0,
+      0) == -1)
+    {
+      throw SocketException("Failed to fetch remote host domain name"); 
+    }
+    
+    // Report join peer
+    std::string connection_type_str;
+    if (p2p_table.isConnectedPeer(peer.ipv4, peer.port)) {
+      connection_type_str = CONNECTED_MSG;
+    } else if (p2p_table.isPendingPeer(peer.ipv4, peer.port)) {
+      connection_type_str = PENDING_MSG; 
+    } else if (p2p_table.isRejectedPeer(peer.ipv4, peer.port)) {
+      connection_type_str = REJECTED_MSG; 
+    } else {
+      connection_type_str = AVAILABLE_MSG;
+    }
+
+    fprintf(
+        stderr,
+        "\t\t\t%s:%d (%s)\n",
+        domain_name,
+        peer.port,
+        connection_type_str.c_str()
+    );
+  }
+
+  if (p2p_table.isFull()) {
+    // Notify user that this node is saturated and that it can't peer with more nodes (exit early)
+    fprintf(
+      stderr,
+      "\tLocal peer table is full with %i peers -- subsequent peering requests will be redirected.\n",
+      p2p_table.getNumPeers()
+    );
+    
+    return; /* skip recommended peers */
+  }
+
+  // Notify user that we have additional room and can peer with more nodes.
+  fprintf(
+    stderr,
+    "Local peer table has room -- number of available peers: %i.\n",
+    p2p_table.getMaxPeers() - p2p_table.getNumPeers()
+  );
+  
+  // Bind outgoing connections to the same port that this node
+  // is lisetening on
+  ServerBuilder server_builder;
+  server_builder
+    .setLocalPort(service_port)
+    .enableAddressReuse();
+
+  // Attempt to saturate peer table with recommended peers
+  auto remote_iter = recommended_peers.begin();
+
+  while (!p2p_table.isFull() && remote_iter != recommended_peers.end()) {
+    // Attempt connection if not in p2p-table
+    if (!p2p_table.hasRemote(remote_iter->ipv4, remote_iter->port)) {
+     
+      try {
+        // Connect to peer
+        Connection new_peer = server_builder
+            .setRemoteIpv4Address(remote_iter->ipv4)
+            .setRemotePort(remote_iter->port)
+            .build();
+        
+        // Put connection in p2p table in pending state
+        p2p_table.registerPendingPeer(new_peer);
+
+        // Report peering attempt 
+        fprintf(
+            stderr,
+            "Connecting to peer %s:%d (referenced by %s:%d)\n",
+            new_peer.getRemoteDomainName().c_str(),
+            new_peer.getRemotePort(),
+            connection.getRemoteDomainName().c_str(),
+            connection.getRemotePort()
+        );
+      } catch (const BusyAddressSocketException& e) {
+        // Notify user that this node and its remote peer attempted
+        // to connect simultaneously and that the remote connected
+        // first => erase this socket
+        fprintf(
+            stderr,
+            "WARNING: peers attempted to connect simulatenously (case 4). Killing local connection."
+        ); 
+
+        // TODO find a way to close this socket... (probably need dynamic memory...)
+      }
+    }
+    ++remote_iter;
+  }
 }
 
 /**
@@ -691,7 +795,7 @@ void handlePeeringResponseTraffic(
  */
 void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
   
-  // WARNING: can't be reference because we will delete the original
+  // WARNING: 'connection' can't be reference because we will delete the original
   // and access this connection again.
   P2pTable& p2p_table = img_net.getP2pTable();
   const Connection connection = p2p_table.fetchConnectionByFd(fd);
@@ -704,7 +808,7 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
       connection.getRemotePort()
   );
   
-  // Read header from wire to determine packet type
+  // Read packet header from wire to determine message type
   packet_header_t packet_header;
   size_t packet_header_len = sizeof(packet_header);
   std::string message;
@@ -713,7 +817,7 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
     message += connection.read();
   }
 
-  // Deserialize packet-header and consume in buffer  
+  // Deserialize packet-header and consume packet data in buffer  
   memcpy(&packet_header, message.c_str(), packet_header_len);
   message = message.substr(packet_header_len);
 
@@ -730,55 +834,87 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
     exit(1);
   }
 
-  // Determine traffic type of packet
+  // Determine type of traffic
   if (packet_header.type == WELCOME || packet_header.type == REDIRECT) {
-    // Report peering response
-    fprintf(
-        stderr,
-        "\tPeering response received!\n"
-    );     
+    // Report peering response message
+    fprintf(stderr, "\tPeering response received!\n");
+
+    // Register connection state change
+    switch (header.type) {
+      // Connection was accepted by peer
+      case WELCOME:
+        // Transfer 'connection' state from 'pending' -> 'connected'
+        p2p_table.registerConnectedPeer(connection);
+       
+        // Report connection
+        fprintf(stderr, "\tConnection accepted!\n");
+        break;
+      
+      // Peering request was rejected by peer
+      case REDIRECT:
+        // Transfer 'connection' state from 'pending' -> 'rejected'
+        p2p_table.registerRejectedPeer(connection);  
+
+        // Report redirection
+        fprintf(
+          stderr,
+          "\tConnection attempt rejected!\n"
+        );
+        break;
+
+      // Report invalid packet type, then fail
+      default:
+        fprintf(
+            stderr,
+            "ERROR: invalid peering response packet type(%i) received!\n",
+            header.type
+        );
+        exit(1);
+    }
 
     // Read remainder of peering_response_header_t packet
     peering_response_header_t resp_header;
-    size_t bytes_remaining = sizeof(resp_header);
+    size_t bytes_remaining = sizeof(resp_header) - packet_header_len;
     
     while (message.size() < bytes_remaining) {
       message += connection.read();
     }
     
-    // Validate peering response packet length
-    if (bytes_remaining != message.size()) {
-      // Report invalid peering response packet length
+    // Deserialize peering response packet and consume peering_response_header
+    // packet data in buffer
+    resp_header.header = packet_header;
+
+    memcpy(&resp_header.num_peers, message.c_str(), bytes_remaining);
+    message = message.substr(bytes_remaining);
+
+    // Report number of recommended peers
+    fprintf(
+        stderr,
+        "\tNumber of recommended peers: %i.\n",
+        resp_header.num_peers 
+    );
+
+    // Validate peering_message_t message length
+    if (!resp_header.num_peers && message.size()) {
+      // No peers were recommended, so there shouldn't be any 
+      // additional bytes on the wire...
       fprintf(
           stderr,
-          "\tERROR: invalid peering response message length. Expected: %i, received: %i\n",
+          "\tERROR: invalid peer response message length. Expected: %i, received: %i\n",
           bytes_remaining,
-          message.size()
+          bytes_remaining + message.size()
       );
       exit(1);
     }
 
-    // Deserialize peering response packeet
-    resp_header.header.vers = packet_header.vers;
-    resp_header.header.type = packet_header.type;
-
-    memcpy(&resp_header.num_peers, message.c_str(), bytes_remaining);
-
-
-    fprintf(
-        stderr,
-        "\t");
-
-   
-
-    handlePeeringResponse(packet_header, connection, img_net);
+    // Handle additional peers, if provided
+    if (resp_header.num_peers) {
+      handleRecommendedPeerTraffic(resp_header, message, connection, img_net);
+    }
 
   } else if (packet_header.type == SEARCH) {
-    // Report image traffic
-    fprintf(
-        stderr,
-        "\tImage query received!\n"
-    );
+    // Report p2p image query traffic
+    fprintf(stderr, "\tImage query received!\n");
     
     // Read remainder of p2p_image_query_t packet
     size_t bytes_remaining = sizeof(p2p_image_query_t) - message.size();
@@ -788,7 +924,8 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
 
     // Validate packet length
     if (bytes_remaining != message.size()) {
-      // Report invalid image query packet length
+      // Shouldn't be any more bytes on the wire at the end 
+      // of a p2p image query packet...
       fprintf(
           stderr,
           "\tERROR: invalid image query message length. Expected: %i, received: %i\n",
@@ -800,18 +937,17 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
 
     // Deserialize image query packet
     p2p_image_query_t image_query;
-    image_query.header.vers = packet_header.vers;
-    image_query.header.type = packet_header.type;
+    image_query.header = packet_header;
 
     memcpy(&image_query.search_id, message.c_str(), bytes_remaining);
 
-    // Report p2p image query
+    // Report p2p image query specifics
     fprintf(
         stderr,
         "\tImage query: peer(orig-ipv4: %i, orig-port: %i) is querying for %s with search-id: %i\n",
-        ntohl(image_query.orig_peer.ipv4),
-        ntohs(image_query.orig_peer.port),
-        ntohs(image_query.search_id)
+        image_query.orig_peer.ipv4,
+        image_query.orig_peer.port,
+        image_query.search_id
     );
    
     handleP2pImageQuery(image_query, connection, img_net); 
@@ -823,131 +959,6 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
         "ERROR: invalid packet type(%i) received!\n",
         packet_header.type
     );
-  }
-
-
-  if (p2p_table.isFull()) {
-    fprintf(
-      stderr,
-      "Local peer table is full -- subsequent peering requests will be redirected.\n\n"
-    );
-  } else {
-    fprintf(
-      stderr,
-      "Local peer table has room -- attempting to connect to more peers.\n\n"
-    );
-  }
-
-  // Read auto-join nodes from peer
-  if (p2p_packet_header.num_peers) {
-    // Fail due to negative 'num-peers'
-    assert(p2p_packet_header.num_peers > 0);
-    
-    size_t peer_addr_size = sizeof(peer_addr);
-    size_t message_body_len = peer_addr_size * p2p_packet_header.num_peers;
-    
-    message = message.substr(p2p_packet_header_len);
-    
-    while (message.size() < message_body_len) {
-      message += connection.read();
-    }
-
-    const char* message_cstr = message.c_str();
-    std::vector<peer_addr> peers_to_join;
-    peers_to_join.reserve(p2p_packet_header.num_peers);
-
-    // Report recommended peers
-    fprintf(stderr, "\tRecommended peers: %i\n", p2p_packet_header.num_peers);
-
-    // Deserialize message body
-    for (size_t i = 0; i < message_body_len; i += peer_addr_size) {
-      peer_addr peer;
-      memcpy(&peer, message_cstr + i, peer_addr_size);
-      peers_to_join.push_back(peer);
-
-      // Fetch domain name of recommended peer
-      struct sockaddr_in addr;
-      addr.sin_family = AF_INET;
-      addr.sin_port = htons(peer.port);
-      addr.sin_addr.s_addr = htonl(peer.ipv4);
-      
-      char domain_name[PR_MAXFQDN + 1];
-      memset(domain_name, 0, PR_MAXFQDN + 1);
-      if (::getnameinfo(
-        (struct sockaddr *) &addr,
-        sizeof(addr),
-        domain_name,
-        PR_MAXFQDN,
-        NULL,
-        0,
-        0) == -1)
-      {
-        throw SocketException("Failed to fetch remote host domain name"); 
-      }
-      
-      // Report join peer
-      std::string connection_type_str;
-      if (p2p_table.isConnectedPeer(peer.ipv4, peer.port)) {
-        connection_type_str = "connected";
-      } else if (p2p_table.isPendingPeer(peer.ipv4, peer.port)) {
-        connection_type_str = "pending"; 
-      } else if (p2p_table.isRejectedPeer(peer.ipv4, peer.port)) {
-        connection_type_str = "rejected"; 
-      } else {
-        connection_type_str = "available";
-      }
-
-      fprintf(
-          stderr,
-          "\t\t%s:%d (%s)\n",
-          domain_name,
-          peer.port,
-          connection_type_str.c_str()
-      );
-    }
-   
-    // Bind outgoing connections to the same port that this node
-    // is lisetening on
-    ServerBuilder server_builder;
-    server_builder
-      .setLocalPort(service_port)
-      .enableAddressReuse();
-
-    // Attempt to saturate peer table with recommended peers
-    auto remote_iter = peers_to_join.begin();
-
-    while (!p2p_table.isFull() && remote_iter != peers_to_join.end()) {
-      // Attempt connection if not in p2p-table
-      if (!p2p_table.hasRemote(remote_iter->ipv4, remote_iter->port)) {
-       
-        try {
-          // Connect to peer
-          Connection new_peer = server_builder
-              .setRemoteIpv4Address(remote_iter->ipv4)
-              .setRemotePort(remote_iter->port)
-              .build();
-          
-          // Put connection in p2p table in pending state
-          p2p_table.registerPendingPeer(new_peer);
-
-          // Report peering attempt 
-          fprintf(
-              stderr,
-              "Connecting to peer %s:%d (referenced by %s:%d)\n",
-              new_peer.getRemoteDomainName().c_str(),
-              new_peer.getRemotePort(),
-              connection.getRemoteDomainName().c_str(),
-              connection.getRemotePort()
-          );
-        } catch (const BusyAddressSocketException& e) {
-          fprintf(
-              stderr,
-              "WARNING: peers attempted to connect simulatenously (case 4). Killing local connection."
-          ); 
-        }
-      }
-      ++remote_iter;
-    }
   }
 }
 

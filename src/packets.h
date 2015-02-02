@@ -40,8 +40,12 @@
 #define PM_VERS   0x1
 #define PM_SEARCH 0x4
 
-#define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
+#define CONNECTED_MSG "connected"
+#define PENDING_MSG   "pending"
+#define REJECTED_MSG  "rejected"
+#define AVAILABLE_MSG "available"
 
+#define net_assert(err, errmsg) { if ((!err)) { perror(errmsg); assert((err)); } }
 
 /**
  * Message type codes.
@@ -90,7 +94,7 @@ struct imsg_t {
 /**
  * Packet formats for peer redirection.
  */
-struct peer_addr {
+struct peer_addr_t {
   uint32_t ipv4;
   uint16_t port, reserved;
 };
@@ -101,7 +105,7 @@ struct peer_addr {
 struct p2p_image_query_t {
   packet_header_t header;
   unsigned short search_id;
-  peer_addr orig_peer;
+  peer_addr_t orig_peer;
   char file_name[NETIMG_MAXFNAME];
 };
 
