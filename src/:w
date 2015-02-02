@@ -230,20 +230,20 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
 }
 
 /**
- * isClientImageQuery()
+ * isImageQuery()
  * - Returns true iff header indicates an image query.
  * @param header : header of incoming packet  
  */
-bool isClientImageQuery(const packet_header_t& header) {
+bool isImageQuery(const packet_header_t& header) {
   return header.vers == NETIMG_VERS && header.type == NETIMG_QRY;
 }
 
 /**
- * isPeerImageTransfer()
+ * isImageTransfer()
  * - Returns true iff header indicates an image transfer.
  * @param header : header of incoming packet  
  */
-bool isPeerImageTransfer(const packet_header_t& header) {
+bool isImageTransfer(const packet_header_t& header) {
   return header.vers == PM_VERS && header.type == PM_SEARCH;
 }
 
@@ -265,45 +265,6 @@ void rejectImageQuery(const Connection* connection) {
     size_t bytes_remaining = connection->write(message);
     message = message.substr(message.size() - bytes_remaining);
   }
-}
-
-/**
- * timeoutImageQuery()
- * - Send timeout message back to querying client.
- * @param connection : querying client  
- */
-void timeoutImageQuery(ImageNetwork& img_net) {
-  
-  // Fail because we don't have the image client when we think we do...
-  assert(img_net.hasImageClient()); 
-
-  const Connection& image_client = img_net.getImageClient();
-
-  // Report image-query timeout
-  fprintf(
-     stderr,
-     "Image query timed out for %s:%d\nWe can now service additional image queries.\n",
-     image_client.getRemoteDomainName().c_str(),
-     image_client.getRemotePort()
-  );
-
-    
-  // Assemble imsg packet
-  imsg_t imsg_packet;
-  imsg_packet.header = {NETIMG_VERS, NETIMG_RPY};
-  imsg_packet.im_found = htons(NETIMG_NFOUND);
-
-  // Send query timeout 
-  std::string message( (char *) &imsg_packet, sizeof(imsg_packet));
-
-  while (message.size()) {
-    size_t bytes_remaining = image_client.write(message);
-    message = message.substr(message.size() - bytes_remaining);
-  }
-
-  // Close connection and free this peer for more image queries
-  image_client.close();
-  img_net.invalidateImageClient();
 }
 
 /**
@@ -356,6 +317,9 @@ void transferImage(
     
     // Consume sent bytes
     image_pixels_str = image_pixels_str.substr(segment_bytes_sent);
+    
+    // Throttle segement sends
+    usleep(NETIMG_USLEEP);
   }
 }
 
@@ -565,8 +529,6 @@ void processImageQuery(
       );
 
       // Send image back to client
-      image_packet.header.vers = NETIMG_VERS;
-      image_packet.header.type = NETIMG_RPY;
       returnImageToClient( (char *) image.GetPixels(), image_packet, image_size, img_net); 
       
       return; 
@@ -579,10 +541,7 @@ void processImageQuery(
         image_query.file_name
     );
 
-    // Forward image to originating peer (which then streams down to client)
-    image_packet.header.vers = PM_VERS;
-    image_packet.header.type = PM_SEARCH;
-
+    // Send image back to client
     returnImageToOriginatingPeer( (char *) image.GetPixels(), image_packet, image_size, image_query, img_net); 
     
     return;
@@ -607,11 +566,11 @@ void processImageQuery(
  * @param img_net : image network data
  */
 void handleImageTransferTraffic(
-  std::string buffer,
+  std::string& buffer,
   const Connection& connection,
   ImageNetwork& img_net
 ) {
-
+  
   // Fail because we're not an 'originating peer'
   assert(img_net.hasImageClient());
 
@@ -624,12 +583,8 @@ void handleImageTransferTraffic(
   }
 
   // Deserialize image-transfer header and consume buffer bytes
-  memcpy(&imsg_packet, buffer.c_str(), imsg_len);
+  memcpy(&imsg_packet, buffer.c_str(), buffer.size());
   buffer = buffer.substr(imsg_len);
-
-  // Update packet header information for image client
-  imsg_packet.header.vers = NETIMG_VERS;
-  imsg_packet.header.type = NETIMG_RPY;
 
   // Report image transfer
   fprintf(
@@ -645,7 +600,7 @@ void handleImageTransferTraffic(
   size_t image_pixels_len = 
     ntohs(imsg_packet.im_width) * 
     ntohs(imsg_packet.im_height) * 
-    imsg_packet.im_depth;
+    ntohs(imsg_packet.im_depth);
 
   while (buffer.size() < image_pixels_len) {
     buffer += connection.read();
@@ -709,7 +664,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
   memcpy(&header, message.c_str(), packet_header_len);
 
   // Determine packet header
-  if (isClientImageQuery(header)) {
+  if (isImageQuery(header)) {
     // Reject query if we're already handling one...
     if (img_net.hasImageClient()) {
       // Notify user of query rejection
@@ -772,14 +727,11 @@ void handleImageTraffic(ImageNetwork& img_net) {
       processImageQuery(p2p_query_packet, connection, img_net); 
     }
 
-  } else if (isPeerImageTransfer(header)) {
+  } else if (isImageTransfer(header)) {
 
     // Notify user of image transfer
     fprintf(stderr, "\tReceiving image transfer!\n");
-   
-    // Fail due to null connection
-    assert(connection);
-
+    
     // Handle image transfer
     handleImageTransferTraffic(message, *connection, img_net); 
     
@@ -1232,39 +1184,27 @@ void runImageNetwork(
       FD_SET(fd, &rset);
     }
 
-    // Configure select timeout
-    timeval timeout = {QUERY_TIMEOUT_SECS, QUERY_TIMEOUT_MICROS};
-    bool did_query_timeout = img_net.hasImageClient();
-
     // Wait on p2p/img services and peer nodes for incoming traffic
-    if (select(max_fd + 1, &rset, NULL, NULL, &timeout) == -1) {
+    if (select(max_fd + 1, &rset, NULL, NULL, NULL) == -1) {
       throw SocketException("Failed while selecting sockets with traffic");
     }
 
     // Handle incoming connection
     if (FD_ISSET(p2p_service.getFd(), &rset)) {
-      did_query_timeout = false;
       handlePeeringClient(p2p_service, p2p_table);
     }
     
     // Handle incoming connection
     if (FD_ISSET(img_service.getFd(), &rset)) {
-      did_query_timeout = false;
       handleImageTraffic(img_net);
     }
 
     // Handle messages from peer nodes
     for (int fd : peering_fds) {
       if (FD_ISSET(fd, &rset)) {
-        did_query_timeout = false;
         handleP2pTraffic(p2p_service.getPort(), fd, img_net);
       } 
     }
-
-    // Check if query times out
-   if (did_query_timeout) {
-     timeoutImageQuery(img_net);
-   } 
 
   } while (true);
 }

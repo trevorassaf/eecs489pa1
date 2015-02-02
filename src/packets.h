@@ -26,6 +26,9 @@
 #define NETIMG_MSS      1440
 #define NETIMG_USLEEP 250000    // 250 ms
 
+#define QUERY_TIMEOUT_SECS 1 
+#define QUERY_TIMEOUT_MICROS 0 
+
 #define PR_MAXPEERS 6
 #define PR_MAXFQDN 256
 
