@@ -34,7 +34,7 @@ endif
 all: $(P2PDB_EXE) $(NETIMG_EXE)
 
 p2pdb: $(P2PDB_OBJS) 
-	$(CC) $(LFLAGS) -o $(P2PDB_EXE) $(P2PDB_OBJS)
+	$(CC) $(LFLAGS) -o $(P2PDB_EXE) $(P2PDB_OBJS); cp p2pdb no_img/p2pdb
 
 main.o: main.cpp $(P2PDB_HEADERS)
 	$(CC) $(CXXFLAGS) -c main.cpp

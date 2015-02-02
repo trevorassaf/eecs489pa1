@@ -230,20 +230,20 @@ void redirectPeer(const Connection& connection, P2pTable& p2p_table) {
 }
 
 /**
- * isImageQuery()
+ * isClientImageQuery()
  * - Returns true iff header indicates an image query.
  * @param header : header of incoming packet  
  */
-bool isImageQuery(const packet_header_t& header) {
+bool isClientImageQuery(const packet_header_t& header) {
   return header.vers == NETIMG_VERS && header.type == NETIMG_QRY;
 }
 
 /**
- * isImageTransfer()
+ * isPeerImageTransfer()
  * - Returns true iff header indicates an image transfer.
  * @param header : header of incoming packet  
  */
-bool isImageTransfer(const packet_header_t& header) {
+bool isPeerImageTransfer(const packet_header_t& header) {
   return header.vers == PM_VERS && header.type == PM_SEARCH;
 }
 
@@ -319,7 +319,7 @@ void transferImage(
     image_pixels_str = image_pixels_str.substr(segment_bytes_sent);
     
     // Throttle segement sends
-    usleep(NETIMG_USLEEP);
+    //usleep(NETIMG_USLEEP);
   }
 }
 
@@ -407,7 +407,7 @@ void queryNetworkForImage(
     // Report dropped packet
     fprintf(
       stderr,
-      "\tDropped packet due to duplication! (file: %s, search-id: %i, ipv4: %i, port: %i)\n",
+      "\tDropped packet due to duplication! (file: %s, search-id: %hu, ipv4: %u, port: %hu)\n",
       p2p_query.file_name,
       ntohs(p2p_query.search_id),
       ntohl(p2p_query.orig_peer.ipv4),
@@ -443,7 +443,7 @@ void queryNetworkForImage(
     // Report forwarded image
     fprintf(
         stderr,
-        "\tForwarding image query to %s:%d\n",
+        "\t\tForwarding image query to %s:%d\n",
         peer->getRemoteDomainName().c_str(),
         peer->getRemotePort()
     );
@@ -529,6 +529,8 @@ void processImageQuery(
       );
 
       // Send image back to client
+      image_packet.header.vers = NETIMG_VERS;
+      image_packet.header.type = NETIMG_RPY;
       returnImageToClient( (char *) image.GetPixels(), image_packet, image_size, img_net); 
       
       return; 
@@ -537,13 +539,14 @@ void processImageQuery(
     // Notify user that local node (non-originating peer) has image
     fprintf(
         stderr,
-        "\tFound %s locally on non-originating peer!\nSending back to originating peer, %s:%d...\n",
-        image_query.file_name,
-        img_net.getImageClient().getRemoteDomainName().c_str(),
-        img_net.getImageClient().getRemotePort()
+        "\tFound %s locally on non-originating peer!\nSending back to originating peer...\n",
+        image_query.file_name
     );
 
-    // Send image back to client
+    // Forward image to originating peer (which then streams down to client)
+    image_packet.header.vers = PM_VERS;
+    image_packet.header.type = PM_SEARCH;
+
     returnImageToOriginatingPeer( (char *) image.GetPixels(), image_packet, image_size, image_query, img_net); 
     
     return;
@@ -568,11 +571,11 @@ void processImageQuery(
  * @param img_net : image network data
  */
 void handleImageTransferTraffic(
-  std::string& buffer,
+  std::string buffer,
   const Connection& connection,
   ImageNetwork& img_net
 ) {
-  
+
   // Fail because we're not an 'originating peer'
   assert(img_net.hasImageClient());
 
@@ -585,8 +588,12 @@ void handleImageTransferTraffic(
   }
 
   // Deserialize image-transfer header and consume buffer bytes
-  memcpy(&imsg_packet, buffer.c_str(), buffer.size());
+  memcpy(&imsg_packet, buffer.c_str(), imsg_len);
   buffer = buffer.substr(imsg_len);
+
+  // Update packet header information for image client
+  imsg_packet.header.vers = NETIMG_VERS;
+  imsg_packet.header.type = NETIMG_RPY;
 
   // Report image transfer
   fprintf(
@@ -602,7 +609,7 @@ void handleImageTransferTraffic(
   size_t image_pixels_len = 
     ntohs(imsg_packet.im_width) * 
     ntohs(imsg_packet.im_height) * 
-    ntohs(imsg_packet.im_depth);
+    imsg_packet.im_depth;
 
   while (buffer.size() < image_pixels_len) {
     buffer += connection.read();
@@ -666,7 +673,7 @@ void handleImageTraffic(ImageNetwork& img_net) {
   memcpy(&header, message.c_str(), packet_header_len);
 
   // Determine packet header
-  if (isImageQuery(header)) {
+  if (isClientImageQuery(header)) {
     // Reject query if we're already handling one...
     if (img_net.hasImageClient()) {
       // Notify user of query rejection
@@ -729,11 +736,14 @@ void handleImageTraffic(ImageNetwork& img_net) {
       processImageQuery(p2p_query_packet, connection, img_net); 
     }
 
-  } else if (isImageTransfer(header)) {
+  } else if (isPeerImageTransfer(header)) {
 
     // Notify user of image transfer
     fprintf(stderr, "\tReceiving image transfer!\n");
-    
+   
+    // Fail due to null connection
+    assert(connection);
+
     // Handle image transfer
     handleImageTransferTraffic(message, *connection, img_net); 
     
@@ -1099,7 +1109,7 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
 
   } else if (packet_header.type == SEARCH) {
     // Report p2p image query traffic
-    fprintf(stderr, "\tImage query received from peer!\n");
+    fprintf(stderr, "\tImage query received!\n");
     
     // Read remainder of p2p_image_query_t packet
     p2p_image_query_t image_query;
@@ -1129,14 +1139,14 @@ void handleP2pTraffic(uint16_t service_port, int fd, ImageNetwork& img_net) {
     fprintf(
         stderr,
         "\tImage query: peer(orig-ipv4: %u, orig-port: %u) is querying for %s with search-id: %u\n",
-        image_query.orig_peer.ipv4,
-        image_query.orig_peer.port,
+        ntohl(image_query.orig_peer.ipv4),
+        ntohs(image_query.orig_peer.port),
         image_query.file_name,
-        image_query.search_id
+        ntohs(image_query.search_id)
     );
  
     // Broadcast image query
-    queryNetworkForImage(image_query, &connection, img_net); 
+    processImageQuery(image_query, &connection, img_net); 
 
   } else {
     // Report invalid packet type

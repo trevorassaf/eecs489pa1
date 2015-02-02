@@ -61,9 +61,6 @@ imgdb_loadimg(const char *fname, LTGA *image, imsg_t *imsg, long *img_size)
   int alpha, greyscale;
   double img_dsize;
   
-  imsg->header.vers = NETIMG_VERS;
-  imsg->header.type = NETIMG_RPY;
-
   image->LoadFromFile(fname);
 
   if (!image->IsLoaded()) {
