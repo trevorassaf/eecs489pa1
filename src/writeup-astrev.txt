@@ -1,0 +1,11 @@
+1. There are two executables: netimg and p2pdb
+  - p2pdb works on ./../refp2pdb -p caen-eecs489p01.engin.umich.edu
+  - netimg runs on OSX 10.9.5
+  - both require c++11
+2. - I used 3 late days on this project. The project took so long because
+     I decided to write everything from scratch. I used oop patterns extensively
+     in this project. Hopefully I can reuse this code in subsequent projects.
+  - Both my project and 'refp2p' infinite loops when you try to connect to a saturated
+    p2p network. Ex: run './refp2p', then run './refp2p -p <connect to first peer>' 7 times
+
+3. I really liked this assignment!
